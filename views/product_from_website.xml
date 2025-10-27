@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="import_product_from_website_wizard" model="ir.ui.view">
+            <field name="name">book.shop.import.product.website.view</field>
+            <field name="model">import.product.from.website</field>
+            <field name="arch" type="xml">
+                <form>
+                    <group>
+
+                        <group>
+                            <field name="source_url"/>
+                            <field name="target_url"/>
+                            <field name="target_db"/>
+                            <field name="user_name"/>
+                            <field name="password"/>
+                            <button string="Fetch Data" type="object" name="fetch_data" class="btn-primary"/>
+                        </group>
+
+                    </group>
+                    <group>
+                        <group>
+                            <field name="product_name"/>
+
+                            <field name="authors"/>
+                            <field name="publishers"/>
+                            <field name="stock_qty"/>
+                            <field name="ecommerce_description"/>
+                            <field name="face_value"/>
+                            <field name="price"/>
+                            <field name="pages"/>
+                            <field name="weight"/>
+                            <field name="editions"/>
+                            <field name="isbn"/>
+                            <field name="publication_date"/>
+
+                        </group>
+                        <group>
+                            <field name="categ_id"/>
+                            <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', 'True')]" context="{'default_is_writer':1}"/>
+                            <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', 'True')]" context="{'default_is_publisher':1}"/>
+                            <field name="image_url" widget="image_url"/>
+                        </group>
+                        <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
+                        <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-primary"/>
+                    </group>
+                </form>
+            </field>
+        </record>
+
+        <record id ="action_product_from_website_wizard" model="ir.actions.act_window">
+            <field name="name">Import Product</field>
+            <field name="res_model">import.product.from.website</field>
+            <field name="view_mode">form</field>
+            <field name="view_id" ref="import_product_from_website_wizard"/>
+            <field name="target">current</field>
+        </record>
+    </data>
+
+</odoo>

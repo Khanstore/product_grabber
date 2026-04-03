@@ -89,20 +89,12 @@ class RokomariExtractor:
         return self._extract_text(selectors, "Unknown Product")
 
     def get_current_price(self):
-        selectors = [
-            ("div", {"class": "fs-16 opacity-60"}),
-            ("span", {"class": "price-current"}),
-            ("span", {"class": lambda x: x and "price" in x.lower()}),
-        ]
-        return self._parse_price(self._extract_text(selectors))
+
+        return self._parse_price(self.soup.find(class_='sell-price').get_text(strip=True))
 
     def get_original_price(self):
-        selectors = [
-            ("del", {"class": "original-price"}),
-            ("span", {"class": "price-original"}),
-            ("del", {}),
-        ]
-        return self._parse_price(self._extract_text(selectors))
+
+        return self._parse_price(self.soup.find(class_='original-price').get_text(strip=True))
 
     def get_stock_quantity(self):
         stock_elem = self.soup.find("span", id="available-quantity")

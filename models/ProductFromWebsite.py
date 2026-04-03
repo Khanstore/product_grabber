@@ -63,6 +63,19 @@ class importProductFromWebsite(models.TransientModel):
     language=fields.Char(string="Language")
     country=fields.Char(string="Country")
 
+    google_search_url = fields.Char(compute='_compute_google_search_url')
+
+    @api.depends('image_url')
+    def _compute_google_search_url(self):
+        base_url = "https://lens.google.com/uploadbyurl?url="
+        for record in self:
+            if record.image_url:
+                # Encodes the string to be URL friendly
+                encoded_image_url = urllib.parse.quote(record.image_url, safe='')
+                record.google_search_url = f"{base_url}{encoded_image_url}"
+            else:
+                record.google_search_url = False
+
     def create_remote_product(self):
         url = self.target_url  # Replace with your Odoo instance URL
         db = self.target_db # Replace with your Odoo database name
@@ -431,44 +444,44 @@ class importProductFromWebsite(models.TransientModel):
 #         return True
 #
 #
-#     def create_product(self):
-#         vals={}
-#         if len(self.author_ids)>0:
-#             vals['author_ids']= [(6, 0, self.author_ids.ids)]
-#
-#
-#         if len(self.categ_id) > 0:
-#             vals['categ_id']=self.categ_id.id
-#         vals['description_ecommerce']=self.ecommerce_description
-#         vals['image_url_template']=self.image_url
-#         vals['is_storable']=True
-#         if self.isbn:
-#             vals['isbn']=self.isbn
-#         if self.publication_date:
-#             vals['last_edition']=self.publication_date
-#         vals['list_price']=self.price
-#         vals['compare_list_price']=self.face_value
-#         vals['name']=self.product_name
-#         vals['pages']=self.pages
-#         vals['publisher_link']=self.source_url
-#         if len(self.publisher_ids)>0:
-#             vals['publisher_ids']= [(6, 0, self.publisher_ids.ids)]
-#         vals['weight']= self.weight
-#
-#
-#
-#
-#         product=self.env['product.template'].create(vals)
-#         return {
-#             'type': 'ir.actions.act_window',
-#             'res_model': 'product.template',
-#             'res_id': product.id,
-#             'view_mode': 'form',
-#             'view_type': 'form',
-#             'target': 'new',  # or 'new' for popup
-#             'context': self.env.context,
-#         }
-#
+    def create_product(self):
+        vals={}
+        if len(self.author_ids)>0:
+            vals['author_ids']= [(6, 0, self.author_ids.ids)]
+
+
+        if len(self.categ_id) > 0:
+            vals['categ_id']=self.categ_id.id
+        vals['description_ecommerce']=self.ecommerce_description
+        vals['image_url_template']=self.image_url
+        vals['is_storable']=True
+        if self.isbn:
+            vals['isbn']=self.isbn
+        if self.publication_date:
+            vals['last_edition']=self.publication_date
+        vals['list_price']=self.price
+        vals['compare_list_price']=self.face_value
+        vals['name']=self.product_name
+        vals['pages']=self.pages
+        vals['publisher_link']=self.source_url
+        if len(self.publisher_ids)>0:
+            vals['publisher_ids']= [(6, 0, self.publisher_ids.ids)]
+        vals['weight']= self.weight
+
+
+
+
+        product=self.env['product.template'].create(vals)
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'product.template',
+            'res_id': product.id,
+            'view_mode': 'form',
+            'view_type': 'form',
+            'target': 'new',  # or 'new' for popup
+            'context': self.env.context,
+        }
+
 #     def action_open_google_image_search(self):
 #         self.ensure_one()
 #         query = self.name or ""

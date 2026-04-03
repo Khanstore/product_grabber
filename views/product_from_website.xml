@@ -39,6 +39,11 @@
                             <field name="categ_id"/>
                             <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', 'True')]" context="{'default_is_writer':1}"/>
                             <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', 'True')]" context="{'default_is_publisher':1}"/>
+                            <field name="image_url" />
+                            <field name="google_search_url"
+                                   widget="url"
+                                   text="Search on Google Images"
+                                   invisible="not google_search_url"/>
                             <field name="image_url" widget="image_url"/>
                         </group>
                         <button string="Import Product" type="object" name="create_product" class="btn-primary"/>

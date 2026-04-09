@@ -1,1 +1,2 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+product_grabber.access_import_product_from_website,access_import_product_from_website,product_grabber.model_import_product_from_website,base.group_user,1,0,0,0

@@ -94,7 +94,7 @@ class RokomariExtractor:
 
     def get_original_price(self):
 
-        return self._parse_price(self.soup.find(class_='original-price').get_text(strip=True))
+        return self._parse_price(self.soup.find(class_='original-price').get_text(strip=True) if self.soup.find(class_='original-price')  else 0)
 
     def get_stock_quantity(self):
         stock_elem = self.soup.find("span", id="available-quantity")

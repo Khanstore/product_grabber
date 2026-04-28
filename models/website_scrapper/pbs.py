@@ -47,18 +47,18 @@ class importProductFromPBS(models.TransientModel):
             extractor = PBSExtractor(soup)
 
             # self.product_name = extractor.get_title()
-            # self.face_value = extractor.get_original_price()
-            # self.price = extractor.get_current_price()
+            self.face_value = extractor.get_original_price()
+            self.price = extractor.get_current_price()
             # self.stock_qty = extractor.get_stock_quantity()
             self.ecommerce_description = extractor.get_description()
             self.image_url = extractor.get_image_url()
 
             specs = extractor.get_specifications()
-            self.authors = specs.get('author', '')
+            self.authors = extractor.get_authors()
             self.product_name = specs.get('title', '')
             self.isbn = specs.get('isbn', '')
             self.publishers = specs.get('publisher', '')
-            # self.pages = specs.get('pages', 1)
+            self.pages = specs.get('pages', 1)
             self.editions = specs.get('edition', '')
             self.language = specs.get('language', '')
             self.country = specs.get('country', '')
@@ -92,11 +92,10 @@ class PBSExtractor:
 
     def get_original_price(self):
         """Extract current and original price"""
-        # Prices are inside <p class="price"> with <ins> and <del>
-        price_container = self.soup.select_one("p del")
-        if price_container:
-            return self._parse_price(price_container.get_text(strip=True))
-        return 0
+        printed_price = self.soup.find("del")
+        if printed_price:
+            return self._parse_price(printed_price.get_text(strip=True))
+
     def get_current_price(self):
         """Extract current and original price"""
         price_container = self.soup.select_one("p del").parent.parent.find('h5')
@@ -114,13 +113,15 @@ class PBSExtractor:
         return ""
 
     def get_authors(self):
-        """Extract book description (বই সংক্ষেপ)"""
-        author_tag = self.soup.find('span', string='লেখক')
-        if author_tag:
-            author_name = author_tag.parent.find_parent().find_next("p")
-            if desc_p:
-                return desc_p.get_text(" ", strip=True)
-        return ""
+        title = self.soup.find("title")
+        if title:
+            title_text = title.get_text()
+            # Title format: "বই নাম-by Writer Name - Category"
+            if "-by " in title_text:
+                writer = title_text.split("-by ")[1].split(" - ")[0].strip()
+                return  writer
+
+
 
     def get_image_url(self):
         """Extract main book cover image"""

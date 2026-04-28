@@ -5,3 +5,7 @@ from . import prothoma
 from . import baatighar
 from . import boibazar
 from . import wafilife
+from . import anannyabooks
+from . import mowlabrothers
+from . import anyaprokash
+from . import somoy

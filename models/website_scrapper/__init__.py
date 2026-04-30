@@ -9,3 +9,8 @@ from . import anannyabooks
 from . import mowlabrothers
 from . import anyaprokash
 from . import somoy
+from . import sottayon
+from . import mayurpankhi
+from . import boibari
+from . import harekrakam
+from . import professors

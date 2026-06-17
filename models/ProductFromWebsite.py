@@ -151,40 +151,53 @@ class importProductFromWebsite(models.TransientModel):
             raise UserError(f"Cannot import product data from {host}")
 
     def create_product(self):
-        vals={}
-        if len(self.author_ids)>0:
-            vals['author_ids']= [(6, 0, self.author_ids.ids)]
+        # 1. Prepare the dictionary for the product.template creation
+        vals = {
+            'name': self.product_name,
+            'list_price': self.price,
+            'compare_list_price': self.face_value,
+            'description_ecommerce': self.ecommerce_description,
+            'image_url_template': self.image_url,
+            'is_storable': True,
+            'pages': self.pages,
+            'publisher_link': self.source_url,
+            'weight': self.weight,
+            'categ_id': self.categ_id.id if self.categ_id else False,
+        }
 
+        # Handle Many2many fields
+        if self.author_ids:
+            vals['author_ids'] = [(6, 0, self.author_ids.ids)]
+        if self.publisher_ids:
+            vals['publisher_ids'] = [(6, 0, self.publisher_ids.ids)]
 
-        if len(self.categ_id) > 0:
-            vals['categ_id']=self.categ_id.id
-        vals['description_ecommerce']=self.ecommerce_description
-        vals['image_url_template']=self.image_url
-        vals['is_storable']=True
+        # Handle optional fields
         if self.isbn:
-            vals['isbn']=self.isbn
+            vals['isbn'] = self.isbn
         if self.publication_date:
-            vals['last_edition']=self.publication_date
-        vals['list_price']=self.price
-        vals['compare_list_price']=self.face_value
-        vals['name']=self.product_name
-        vals['pages']=self.pages
-        vals['publisher_link']=self.source_url
-        if len(self.publisher_ids)>0:
-            vals['publisher_ids']= [(6, 0, self.publisher_ids.ids)]
-        vals['weight']= self.weight
+            vals['last_edition'] = self.publication_date
 
+        # 2. Create the product.template record
+        product = self.env['product.template'].create(vals)
 
+        # 3. Create the Vendor entry in product.supplierinfo
+        # We loop through publishers to ensure every assigned publisher is added as a vendor
+        for publisher in self.publisher_ids:
+            self.env['product.supplierinfo'].create({
+                'product_tmpl_id': product.id,
+                'partner_id': publisher.id,
+                'price': self.price,  # Set default purchase price to same as list price
+                'currency_id': self.env.company.currency_id.id,
+            })
+            break
 
-
-        product=self.env['product.template'].create(vals)
+        # 4. Return the action to open the newly created product form
         return {
             'type': 'ir.actions.act_window',
             'res_model': 'product.template',
             'res_id': product.id,
             'view_mode': 'form',
-            'view_type': 'form',
-            'target': 'new',  # or 'new' for popup
+            'target': 'current',  # Changed to 'current' to open in the main view
             'context': self.env.context,
         }
 

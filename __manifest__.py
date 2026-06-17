@@ -8,6 +8,7 @@
     'data': [
         # 'wizard/business_overview_wizard.xml',
         'views/product_from_website.xml',
+        'views/menu.xml',
         'security/ir.model.access.csv'
     ],
     'installable': True,

@@ -14,3 +14,4 @@ from . import mayurpankhi
 from . import boibari
 from . import harekrakam
 from . import professors
+from . import litonpublication

@@ -6,49 +6,75 @@
             <field name="model">import.product.from.website</field>
             <field name="arch" type="xml">
                 <form>
-                    <group>
+                    <notebook>
+                        <page string="Single Import">
+                            <group>
+                                <group>
+                                    <field name="source_url"/>
+                                    <field name="target_url"/>
+                                    <field name="target_db"/>
+                                    <field name="user_name"/>
+                                    <field name="password" password="True"/>
+                                    <button string="Fetch Data" type="object" name="fetch_data" class="btn-primary"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group>
+                                    <field name="product_name"/>
 
-                        <group>
-                            <field name="source_url"/>
-                            <field name="target_url"/>
-                            <field name="target_db"/>
-                            <field name="user_name"/>
-                            <field name="password"/>
-                            <button string="Fetch Data" type="object" name="fetch_data" class="btn-primary"/>
-                        </group>
+                                    <field name="authors"/>
+                                    <field name="publishers"/>
+                                    <field name="stock_qty"/>
+                                    <field name="ecommerce_description"/>
+                                    <field name="face_value"/>
+                                    <field name="price"/>
+                                    <field name="pages"/>
+                                    <field name="weight"/>
+                                    <field name="editions"/>
+                                    <field name="isbn"/>
+                                    <field name="publication_date"/>
 
-                    </group>
-                    <group>
-                        <group>
-                            <field name="product_name"/>
+                                </group>
+                                <group>
+                                    <field name="categ_id"/>
+                                    <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', True)]" context="{'default_is_writer':1}"/>
+                                    <field name="author_suggestion_ids" widget="many2many_tags" readonly="1"
+                                           invisible="not author_suggestion_ids"/>
+                                    <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', True)]" context="{'default_is_publisher':1}"/>
+                                    <field name="publisher_suggestion_ids" widget="many2many_tags" readonly="1"
+                                           invisible="not publisher_suggestion_ids"/>
+                                    <field name="image_url" />
+                                    <field name="google_search_url"
+                                           widget="url"
+                                           text="Search on Google Images"
+                                           invisible="not google_search_url"/>
+                                    <field name="image_url" widget="image_url"/>
+                                </group>
+                                <group invisible="not duplicate_product_ids" string="Possible Duplicates Found">
+                                    <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" string="Matching Products"/>
+                                    <field name="force_duplicate"/>
+                                </group>
+                                <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
+                                <button string="Update Existing Product" type="object" name="update_existing_product"
+                                        class="btn-secondary" invisible="not duplicate_product_ids"/>
+                                <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-primary"/>
+                            </group>
+                        </page>
+                        <page string="Bulk Import">
+                            <group>
+                                <field name="bulk_urls" nolabel="1" placeholder="https://www.rokomari.com/book/...
+https://www.prothoma.com/product/...
+https://www.wafilife.com/...
 
-                            <field name="authors"/>
-                            <field name="publishers"/>
-                            <field name="stock_qty"/>
-                            <field name="ecommerce_description"/>
-                            <field name="face_value"/>
-                            <field name="price"/>
-                            <field name="pages"/>
-                            <field name="weight"/>
-                            <field name="editions"/>
-                            <field name="isbn"/>
-                            <field name="publication_date"/>
-
-                        </group>
-                        <group>
-                            <field name="categ_id"/>
-                            <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', 'True')]" context="{'default_is_writer':1}"/>
-                            <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', 'True')]" context="{'default_is_publisher':1}"/>
-                            <field name="image_url" />
-                            <field name="google_search_url"
-                                   widget="url"
-                                   text="Search on Google Images"
-                                   invisible="not google_search_url"/>
-                            <field name="image_url" widget="image_url"/>
-                        </group>
-                        <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
-                        <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-primary"/>
-                    </group>
+One product URL per line, from any supported site."/>
+                            </group>
+                            <button string="Run Bulk Import" type="object" name="action_bulk_import" class="btn-primary"/>
+                            <group>
+                                <field name="bulk_import_summary" nolabel="1" readonly="1"
+                                       invisible="not bulk_import_summary"/>
+                            </group>
+                        </page>
+                    </notebook>
                 </form>
             </field>
         </record>

@@ -7,6 +7,7 @@ from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 import json, logging, re, time
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 _logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ def _looks_like_book(data) -> bool:
 # DOM extractor (Selenium-first, BeautifulSoup-assisted)
 # ---------------------------------------------------------------------------
 
-class ProfessorsProkashonExtractor:
+class ProfessorsProkashonExtractor(BaseBookExtractor):
     BASE = 'https://professorsprokashon.com'
 
     TITLE_CSS = [

@@ -14,6 +14,7 @@ import urllib.parse
 from urllib.parse import urlparse
 from odoo.exceptions import UserError
 import base64
+from .base_extractor import BaseBookExtractor
 
 class importProductFromPBS(models.TransientModel):
     _inherit = 'import.product.from.website'
@@ -76,7 +77,7 @@ class importProductFromPBS(models.TransientModel):
 
 
 
-class guardianpubsExtractor:
+class guardianpubsExtractor(BaseBookExtractor):
     """Helper class to extract data from PBS product pages"""
 
     def __init__(self, soup: BeautifulSoup):
@@ -187,9 +188,3 @@ class guardianpubsExtractor:
                 return elem.get_text(strip=True)
         return default
 
-    def _parse_price(self, text):
-        """Parse price into float"""
-        if not text:
-            return 0.0
-        match = re.search(r'[\d,]+\.?\d*', text)
-        return float(match.group().replace(',', '')) if match else 0.0

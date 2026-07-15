@@ -10,6 +10,7 @@ import re
 import json
 import logging
 import time
+from .base_extractor import BaseBookExtractor
 
 _logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class ImportProductFromBoibazar(models.TransientModel):
         return webdriver.Chrome(options=opts)
 
 
-class BoibazarExtractor:
+class BoibazarExtractor(BaseBookExtractor):
     """
     Extracts product data from a rendered BoiBazar book page.
 
@@ -347,13 +348,6 @@ class BoibazarExtractor:
             except Exception:
                 pass
         return None
-
-    def _parse_price(self, text: str) -> float:
-        if not text:
-            return 0.0
-        cleaned = text.replace('৳', '').replace('Tk', '').replace('TK', '').replace(',', '').strip()
-        m = re.search(r'[\d.]+', cleaned)
-        return float(m.group()) if m else 0.0
 
     def _normalize_url(self, url: str) -> str:
         if not url:

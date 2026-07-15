@@ -5,6 +5,7 @@ import re
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from .base_extractor import BaseBookExtractor
 
 _logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class ImportProductFromRokomari(models.TransientModel):
             return False
 
 
-class RokomariExtractor:
+class RokomariExtractor(BaseBookExtractor):
     def __init__(self, soup):
         self.soup = soup
 
@@ -152,8 +153,3 @@ class RokomariExtractor:
                     specs['weight'] = float(match.group()) if match else 0.0
         return specs
 
-    def _parse_price(self, element):
-        if not element: return 0.0
-        text = element.get_text(strip=True)
-        match = re.search(r'[\d,]+\.?\d*', text.replace('৳', '').replace('Tk', ''))
-        return float(match.group().replace(',', '')) if match else 0.0

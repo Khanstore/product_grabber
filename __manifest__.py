@@ -7,9 +7,12 @@
     'depends': ['book_shop'],
     'data': [
         # 'wizard/business_overview_wizard.xml',
+        'security/ir.model.access.csv',
         'views/product_from_website.xml',
+        'views/product_template.xml',
+        'views/import_log.xml',
         'views/menu.xml',
-        'security/ir.model.access.csv'
+        'data/ir_cron.xml',
     ],
     'installable': True,
     'license': 'LGPL-3',

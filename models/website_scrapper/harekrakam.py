@@ -12,6 +12,7 @@ import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 # ===========================================================================
@@ -78,7 +79,7 @@ class ImportProductFromHarekrokom(models.TransientModel):
             return False
 
 
-class HarekrokomExtractor:
+class HarekrokomExtractor(BaseBookExtractor):
     """
     Extract product data from a Harekrokom.com book page.
 
@@ -468,13 +469,6 @@ class HarekrokomExtractor:
         if isinstance(author, dict):
             return author.get('name', '')
         return str(author) if author else ''
-
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        cleaned = str(price_text).replace('৳', '').replace('Tk', '').replace(',', '').strip()
-        match = re.search(r'[\d.]+', cleaned)
-        return float(match.group()) if match else 0.0
 
     def _normalize_url(self, url):
         if not url:

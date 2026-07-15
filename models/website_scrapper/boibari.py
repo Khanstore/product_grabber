@@ -9,6 +9,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromBoibari(models.TransientModel):
@@ -121,7 +122,7 @@ class importProductFromBoibari(models.TransientModel):
 
 # ── Extractor ──────────────────────────────────────────────────────────────
 
-class BoibariExtractor:
+class BoibariExtractor(BaseBookExtractor):
     """
     Extract product data from a boibari.com product page.
 
@@ -371,15 +372,6 @@ class BoibariExtractor:
             if el:
                 return el
         return None
-
-    @staticmethod
-    def _parse_price(text):
-        if not text:
-            return 0.0
-        # strip currency symbols (৳, Tk, BDT, /-) and parse
-        clean = text.replace('৳', '').replace('Tk', '').replace('BDT', '').replace('/-', '')
-        m = re.search(r'[\d,]+\.?\d*', clean)
-        return float(m.group().replace(',', '')) if m else 0.0
 
     @staticmethod
     def _normalize_url(url):

@@ -4,6 +4,7 @@ import requests, re, logging, json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromBaatighar(models.TransientModel):
@@ -61,7 +62,7 @@ class importProductFromBaatighar(models.TransientModel):
             return False
 
 
-class BaatigharExtractor:
+class BaatigharExtractor(BaseBookExtractor):
     """Extract product data from Baatighar.com product pages."""
 
     def __init__(self, soup: BeautifulSoup):
@@ -208,9 +209,3 @@ class BaatigharExtractor:
     #  Private helpers                                                     #
     # ------------------------------------------------------------------ #
 
-    def _parse_price(self, text: str) -> float:
-        if not text:
-            return 0.0
-        cleaned = text.replace("৳", "").replace("Tk", "").replace(",", "").strip()
-        m = re.search(r"[\d.]+", cleaned)
-        return float(m.group()) if m else 0.0

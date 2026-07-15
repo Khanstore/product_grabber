@@ -4,6 +4,7 @@ import requests, re, logging, json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromAnyaprokash(models.TransientModel):
@@ -75,7 +76,7 @@ class importProductFromAnyaprokash(models.TransientModel):
             return False
 
 
-class AnyaprokashExtractor:
+class AnyaprokashExtractor(BaseBookExtractor):
     """
     Extract product data from Anyaprokash.com (Shopify store).
 
@@ -588,16 +589,3 @@ class AnyaprokashExtractor:
 
         return amounts
 
-    def _parse_price(self, text: str) -> float:
-        """Strip Taka / Tk symbols and return a float."""
-        if not text:
-            return 0.0
-        cleaned = (
-            text.replace("৳", "")
-                .replace("Tk", "")
-                .replace(",", "")
-                .replace("\xa0", "")
-                .strip()
-        )
-        m = re.search(r"[\d.]+", cleaned)
-        return float(m.group()) if m else 0.0

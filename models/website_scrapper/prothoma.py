@@ -14,6 +14,7 @@ import urllib.parse
 from urllib.parse import urlparse
 from odoo.exceptions import UserError
 import base64
+from .base_extractor import BaseBookExtractor
 
 class importProductFromRokomari(models.TransientModel):
     _inherit = 'import.product.from.website'
@@ -73,7 +74,7 @@ class importProductFromRokomari(models.TransientModel):
             self.stock_qty = getattr(self, "stock_qty", 0)
             return False
 
-class ProthomaExtractor:
+class ProthomaExtractor(BaseBookExtractor):
     """Helper class to extract data from Rokomari product pages"""
 
     def __init__(self, soup):
@@ -173,17 +174,14 @@ class ProthomaExtractor:
                 return elem
         return None
 
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        match = re.search(r'[\d,]+\.?\d*', price_text.replace('৳', '').replace('Tk', ''))
-        return float(match.group().replace(',', '')) if match else 0.0
-
     def _normalize_url(self, url):
         if not url:
             return None
         if url.startswith('//'):
             return 'https:' + url
         elif url.startswith('/'):
-            return 'https://www.rokomari.com' + url
+            # Was incorrectly hardcoded to rokomari.com (copy-paste from
+            # another extractor) - relative URLs on Prothoma's own pages
+            # must resolve against Prothoma's own domain.
+            return 'https://www.prothoma.com' + url
         return url

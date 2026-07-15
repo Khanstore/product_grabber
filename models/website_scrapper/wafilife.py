@@ -7,6 +7,7 @@ import json
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from .base_extractor import BaseBookExtractor
 
 _logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class ImportProductFromWafilife(models.TransientModel):
         return session
 
 
-class WafilifExtractor:
+class WafilifExtractor(BaseBookExtractor):
     """
     Extracts product data from Wafilife.com (Next.js SSR — no Selenium needed).
     URL pattern: https://www.wafilife.com/<slug>/pd/<numeric-id>
@@ -376,9 +377,3 @@ class WafilifExtractor:
                     return cells[1].get_text(strip=True)
         return ''
 
-    def _parse_price(self, text: str) -> float:
-        if not text:
-            return 0.0
-        cleaned = str(text).replace('৳', '').replace('Tk', '').replace('TK', '').replace(',', '').strip()
-        m = re.search(r'[\d.]+', cleaned)
-        return float(m.group()) if m else 0.0

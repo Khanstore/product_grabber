@@ -4,6 +4,7 @@ import requests, re, logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromMowlaBrothers(models.TransientModel):
@@ -61,7 +62,7 @@ class importProductFromMowlaBrothers(models.TransientModel):
             return False
 
 
-class MowlaBrothersExtractor:
+class MowlaBrothersExtractor(BaseBookExtractor):
     """
     Extract product data from MowlaBrothers.com (WooCommerce / WordPress store).
 
@@ -446,19 +447,3 @@ class MowlaBrothersExtractor:
             specs.get('publisher')
         )
 
-    def _parse_price(self, text: str) -> float:
-        """Strip Taka / TK / ৳ symbols and return a float."""
-        if not text:
-            return 0.0
-        cleaned = (
-            text.replace("৳", "")
-                .replace("TK.", "")
-                .replace("TK", "")
-                .replace("Tk.", "")
-                .replace("Tk", "")
-                .replace(",", "")
-                .replace("\xa0", "")
-                .strip()
-        )
-        m = re.search(r"[\d.]+", cleaned)
-        return float(m.group()) if m else 0.0

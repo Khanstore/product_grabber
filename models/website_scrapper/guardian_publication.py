@@ -10,6 +10,7 @@ import re
 import logging
 import time
 import json
+from .base_extractor import BaseBookExtractor
 
 _logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ class ImportProductFromGuardianpubs(models.TransientModel):
         return webdriver.Chrome(options=chrome_options)
 
 
-class GuardianpubsExtractor:
+class GuardianpubsExtractor(BaseBookExtractor):
     """
     Extracts product data from a rendered Guardianpubs.com product page.
 
@@ -313,13 +314,6 @@ class GuardianpubsExtractor:
             except Exception:
                 continue
         return None
-
-    def _parse_price(self, price_text: str) -> float:
-        if not price_text:
-            return 0.0
-        cleaned = price_text.replace('৳', '').replace('Tk', '').replace('TK', '').strip()
-        match = re.search(r'[\d,]+\.?\d*', cleaned)
-        return float(match.group().replace(',', '')) if match else 0.0
 
     def _normalize_url(self, url: str) -> str:
         if not url:

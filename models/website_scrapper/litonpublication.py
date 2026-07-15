@@ -6,6 +6,7 @@ import logging
 
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from .base_extractor import BaseBookExtractor
 
 
 class ImportProductFromLitonPublication(models.TransientModel):
@@ -61,7 +62,7 @@ class ImportProductFromLitonPublication(models.TransientModel):
             return False
 
 
-class LitonPublicationExtractor:
+class LitonPublicationExtractor(BaseBookExtractor):
     """Extract product data from AnannyaBooks.com (WooCommerce) product pages."""
 
     def __init__(self, soup: BeautifulSoup):
@@ -264,17 +265,3 @@ class LitonPublicationExtractor:
         elif "format" in key or "বিন্যাস" in key:
             specs.setdefault("format", value)
 
-    def _parse_price(self, text: str) -> float:
-        """Strip currency symbols and return a float."""
-        if not text:
-            return 0.0
-        # Remove Taka sign (৳), 'Tk', commas, non-breaking spaces
-        cleaned = (
-            text.replace("৳", "")
-                .replace("Tk", "")
-                .replace(",", "")
-                .replace("\xa0", "")
-                .strip()
-        )
-        m = re.search(r"[\d.]+", cleaned)
-        return float(m.group()) if m else 0.0

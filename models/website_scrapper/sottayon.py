@@ -4,6 +4,7 @@ import json, logging, re, requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromSottayon(models.TransientModel):
@@ -59,7 +60,7 @@ class importProductFromSottayon(models.TransientModel):
             return False
 
 
-class SottayonExtractor:
+class SottayonExtractor(BaseBookExtractor):
     """Helper class to extract data from Sottayon WooCommerce product pages"""
 
     def __init__(self, soup):
@@ -166,9 +167,3 @@ class SottayonExtractor:
         return specs
 
     # --- helpers ---
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        cleaned = price_text.replace('৳', '').replace('Tk', '').replace(',', '')
-        match = re.search(r'[\d.]+', cleaned)
-        return float(match.group()) if match else 0.0

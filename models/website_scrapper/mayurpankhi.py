@@ -7,6 +7,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import re, logging, time
 from odoo.exceptions import UserError
+from .base_extractor import BaseBookExtractor
 
 
 class importProductFromMayurpankhi(models.TransientModel):
@@ -71,7 +72,7 @@ class importProductFromMayurpankhi(models.TransientModel):
                 driver.quit()
 
 
-class MayurpankhiExtractor:
+class MayurpankhiExtractor(BaseBookExtractor):
     """Helper class to extract data from Mayurpankhi (Wix) product pages"""
 
     def __init__(self, soup):
@@ -205,11 +206,3 @@ class MayurpankhiExtractor:
 
         return specs
 
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        cleaned = re.sub(r'[^\d.]', '', price_text.replace(',', ''))
-        try:
-            return float(cleaned)
-        except ValueError:
-            return 0.0

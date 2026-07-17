@@ -67,6 +67,7 @@ class importProductFromAnyaprokash(models.TransientModel):
             self.editions   = specs.get('edition', '')
             self.language   = specs.get('language', '')
             self.country    = specs.get('country', '')
+            self.category_text = specs.get('category', '')
 
             logging.info(f"✓ Successfully scraped: {self.product_name}")
             return True

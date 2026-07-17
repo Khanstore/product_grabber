@@ -2,11 +2,13 @@ import json, xmlrpc.client
 import requests
 import re, logging
 import time
+import difflib
 import urllib.parse
 from urllib.parse import urlparse
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 import base64
+from .phonetic_utils import phonetic_key
 
 _logger = logging.getLogger(__name__)
 
@@ -14,11 +16,70 @@ _logger = logging.getLogger(__name__)
 # many URLs in one go, so we don't hammer the source sites.
 BULK_IMPORT_DELAY = 1.5
 
+# Similarity thresholds (difflib ratio, 0-1) used for the local "smart
+# matching" of authors/publishers/categories/duplicate products. No
+# external AI service or API key is involved - these all compare scraped
+# text against records already in your own database.
+PARTNER_SIMILARITY_THRESHOLD = 0.60
+CATEGORY_SIMILARITY_THRESHOLD = 0.55
+PRODUCT_TITLE_SIMILARITY_THRESHOLD = 0.82
+# Looser bar used only for the informational "closest matching products"
+# list shown when nothing crosses the duplicate threshold above - this is
+# a "you might want to eyeball these" signal, not a block.
+PRODUCT_NEAREST_SIMILARITY_FLOOR = 0.40
+PRODUCT_NEAREST_MAX_RESULTS = 5
+
+
+def _phonetic_shingles(text, n=3, max_shingles=40):
+    """Break the phonetic-folded form of `text` into overlapping
+    n-character shingles (trigrams by default). Used to pre-filter DB
+    candidates via plain SQL ILIKE, without needing a real fuzzy-search
+    extension like PostgreSQL's pg_trgm.
+
+    Matching on a whole folded word (the earlier approach) misses cases
+    where the folding differs by even one internal character - e.g. a
+    Bengali-derived key like 'gardijan pablikesns' vs an English key like
+    'guardian publication' share no literal whole-word substring, even
+    though they're clearly the same name. Shingles fix this: they still
+    share plenty of 3-character fragments ('ard', 'rdi', 'bli', ...), so
+    a candidate search that OR's together ILIKE on each shingle finds the
+    record - the *actual* accept/reject decision is still made afterward
+    by the real similarity score, this step only makes sure a true match
+    doesn't get eliminated before it's ever scored."""
+    key = (phonetic_key(text) or '').replace(' ', '')
+    if not key:
+        return []
+    if len(key) <= n:
+        return [key]
+    shingles = []
+    for i in range(len(key) - n + 1):
+        s = key[i:i + n]
+        if s not in shingles:
+            shingles.append(s)
+    if len(shingles) > max_shingles:
+        # Sample evenly across the string rather than truncating, so a
+        # long title's ending isn't ignored entirely.
+        step = len(shingles) / max_shingles
+        shingles = [shingles[int(i * step)] for i in range(max_shingles)]
+    return shingles
+
 
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
     publisher_link = fields.Char("publisher link")
+    phonetic_key = fields.Char(
+        compute='_compute_phonetic_key', store=True, index=True,
+        help="Auto-generated, folds English/Banglish/Bengali-script spelling "
+             "variants of the product name to a comparable form, so imports "
+             "can find this product even if it was catalogued under a "
+             "differently-scripted or spelled title."
+    )
+
+    @api.depends('name')
+    def _compute_phonetic_key(self):
+        for rec in self:
+            rec.phonetic_key = phonetic_key(rec.name or '')
 
     def action_refresh_from_source(self):
         """Re-scrape each product's original source page and refresh its
@@ -73,6 +134,23 @@ class ProductTemplate(models.Model):
         return refreshed
 
 
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    phonetic_key = fields.Char(
+        compute='_compute_phonetic_key', store=True, index=True,
+        help="Auto-generated, folds English/Banglish/Bengali-script spelling "
+             "variants of the name to a comparable form, so author/publisher "
+             "matching can find this partner regardless of which script or "
+             "spelling the source site used."
+    )
+
+    @api.depends('name')
+    def _compute_phonetic_key(self):
+        for rec in self:
+            rec.phonetic_key = phonetic_key(rec.name or '')
+
+
 class importProductFromWebsite(models.TransientModel):
     _name = 'import.product.from.website'
     _description = 'import product from website'
@@ -108,6 +186,25 @@ class importProductFromWebsite(models.TransientModel):
         string="Possible Duplicates",
         readonly=True,
     )
+    selected_duplicate_id = fields.Many2one(
+        'product.template',
+        string="Product to Update",
+        domain="[('id', 'in', duplicate_product_ids)]",
+        help="When exactly one duplicate is found, this is filled in automatically. "
+             "When more than one is found, pick which one 'Update Existing Product' "
+             "should edit."
+    )
+    nearest_product_ids = fields.Many2many(
+        'product.template',
+        'import_product_nearest_rel',
+        'wizard_id',
+        'product_tmpl_id',
+        string="Closest Matching Products",
+        readonly=True,
+        help="No confident duplicate was found, but these existing products have "
+             "the closest-matching names, in case one of them is actually the same "
+             "item under a different title."
+    )
     author_suggestion_ids = fields.Many2many(
         'res.partner',
         'import_product_author_suggestion_rel',
@@ -129,6 +226,18 @@ class importProductFromWebsite(models.TransientModel):
         help="More than one existing publisher looks similar to the proposed name, "
              "so none was auto-selected. Pick the right one (or none, if it's "
              "genuinely new) in the Publishers field above."
+    )
+    category_text = fields.Char("Category (proposed)")
+    category_suggestion_ids = fields.Many2many(
+        'product.category',
+        'import_product_category_suggestion_rel',
+        'wizard_id',
+        'categ_id',
+        string="Similar Categories Found",
+        readonly=True,
+        help="More than one existing category looks like a plausible fit, "
+             "so none was auto-selected. Pick the right one in the Category "
+             "field above."
     )
     target_url = fields.Char(string="target URL")
     target_db = fields.Char(string="database")
@@ -187,18 +296,86 @@ class importProductFromWebsite(models.TransientModel):
         parts = re.split(r'[,،、]', normalized)
         return [p.strip() for p in parts if p.strip()]
 
-    def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False):
+    # A small, curated Bangla -> English dictionary for common book
+    # genre/category words. This deliberately does NOT try to cover
+    # author names, publisher names, or book titles - those are proper
+    # nouns and get *transliterated* (see phonetic_utils.phonetic_key),
+    # not translated. A genre word like 'উপন্যাস' and its English
+    # equivalent 'Novel' are simply different words tied together by
+    # meaning, so only a real translation lookup - not phonetics - can
+    # connect them, which is what this table is for.
+    _BN_EN_GENRE_TERMS = {
+        'উপন্যাস': 'novel', 'উপন্যাসিকা': 'novella',
+        'ছোটগল্প': 'short story', 'গল্প': 'story',
+        'কবিতা': 'poetry', 'কাব্য': 'poetry',
+        'ইতিহাস': 'history', 'জীবনী': 'biography',
+        'আত্মজীবনী': 'autobiography', 'স্মৃতিকথা': 'memoir',
+        'ভ্রমণ': 'travel', 'রম্য': 'humor',
+        'বিজ্ঞান': 'science', 'কল্পবিজ্ঞান': 'science fiction',
+        'ধর্ম': 'religion', 'ইসলামিক': 'islamic',
+        'রাজনীতি': 'politics', 'অর্থনীতি': 'economics',
+        'দর্শন': 'philosophy', 'মনোবিজ্ঞান': 'psychology',
+        'রহস্য': 'mystery', 'গোয়েন্দা': 'detective',
+        'থ্রিলার': 'thriller', 'ভৌতিক': 'horror',
+        'শিশুতোষ': "children's", 'কিশোর': 'young adult',
+        'কমিক্স': 'comics', 'অনুবাদ': 'translation',
+        'কৃষি': 'agriculture', 'স্বাস্থ্য': 'health',
+        'রান্না': 'cooking', 'নাটক': 'drama',
+        'উপন্যাস সমগ্র': 'novel collection', 'গণিত': 'mathematics',
+        'শিক্ষা': 'education', 'আইন': 'law',
+        'সাহিত্য': 'literature', 'প্রবন্ধ': 'essay',
+    }
+
+    def _translate_known_terms(self, text):
+        """Best-effort word/phrase substitution using the curated genre
+        dictionary above. Only meaningful for category/genre text - see
+        the note on _BN_EN_GENRE_TERMS for why this isn't applied to
+        names."""
+        if not text:
+            return text
+        translated = text
+        for bn, en in self._BN_EN_GENRE_TERMS.items():
+            if bn in translated:
+                translated = translated.replace(bn, en)
+        return translated
+
+    def _similarity(self, a, b):
+        """0-1 similarity score between two strings. Combines a plain
+        character comparison with a phonetic-key comparison (see
+        phonetic_utils.phonetic_key) and takes the better of the two, so
+        it catches both simple typos and script/spelling variants
+        (Bengali script vs Banglish vs English) of the same name. No
+        external service or API key - closed-set lookup against your own
+        catalog."""
+        if not a or not b:
+            return 0.0
+        raw_score = difflib.SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
+        phon_a, phon_b = phonetic_key(a), phonetic_key(b)
+        phon_score = difflib.SequenceMatcher(None, phon_a, phon_b).ratio() if phon_a and phon_b else 0.0
+        return max(raw_score, phon_score)
+
+    def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False, populate_ambiguous=True):
         """Search existing res.partner records (authors/publishers) that
         look similar to each proposed name, so we reuse them instead of
         creating duplicate author/publisher partners.
 
-        For each proposed name:
-        - exactly one similar existing partner  -> safe to auto-select
-        - more than one similar existing partner -> too ambiguous to guess;
-          all candidates are returned separately as suggestions instead,
-          for a human to pick the right one (or none, if it's new)
-        - no similar partner                    -> nothing to match, the
-          user can create a new one via the tag widget as before
+        Similarity is scored with difflib against a candidate pool
+        (pre-filtered in the DB by shared significant words, since we
+        can't run a similarity score across an entire partner table
+        without loading it). For each proposed name:
+        - exactly one candidate scores above the similarity threshold
+          -> auto-selected
+        - more than one scores above threshold -> too ambiguous to guess
+          which one is right, so (when populate_ambiguous is True, the
+          interactive single-import case) ALL of them are added to the
+          real field - the user then just removes whichever ones are
+          wrong using the tag's own '×', no separate read-only picker
+          needed. In bulk import (populate_ambiguous=False) that would
+          mean silently attaching several wrong authors with no human
+          around to fix it, so there none are added - they're only
+          returned as suggestions, for the summary/log to flag instead.
+        - none score above threshold -> nothing to match, create new as
+          before
 
         Returns a tuple: (auto_matched, suggestions, ambiguous_names)
         """
@@ -208,25 +385,106 @@ class importProductFromWebsite(models.TransientModel):
         suggestions = Partner
         ambiguous_names = []
 
-        for name in self._split_names(names_str):
-            domain = [('name', 'ilike', name)]
-            if is_writer:
-                domain.append(('is_writer', '=', True))
-            if is_publisher:
-                domain.append(('is_publisher', '=', True))
-            candidates = self.env['res.partner'].search(domain, limit=10)
+        base_domain = []
+        if is_writer:
+            base_domain.append(('is_writer', '=', True))
+        if is_publisher:
+            base_domain.append(('is_publisher', '=', True))
 
-            if len(candidates) == 1:
-                auto_matched |= candidates
-            elif len(candidates) > 1:
-                suggestions |= candidates
+        for name in self._split_names(names_str):
+            shingles = _phonetic_shingles(name)
+            if not shingles:
+                continue
+            # Search the stored, indexed phonetic_key column via
+            # overlapping shingles - already folded to a
+            # script/spelling-independent form, and shingle-based so
+            # small internal folding differences (a dropped vowel, a
+            # slightly different consonant) don't cause a real match to
+            # be missed the way a whole-word substring search would.
+            shingle_domain = ['|'] * (len(shingles) - 1) + [('phonetic_key', 'ilike', s) for s in shingles]
+            candidates = self.env['res.partner'].search(base_domain + shingle_domain, limit=50)
+            if not candidates:
+                continue
+
+            scored = [(p, self._similarity(name, p.name)) for p in candidates]
+            above_threshold = [p for p, score in scored if score >= PARTNER_SIMILARITY_THRESHOLD]
+
+            if len(above_threshold) == 1:
+                auto_matched |= above_threshold[0]
+            elif len(above_threshold) > 1:
+                suggestions |= Partner.browse([p.id for p in above_threshold])
                 ambiguous_names.append(
                     "%s (%d similar matches: %s)"
-                    % (name, len(candidates), ', '.join(candidates.mapped('name')))
+                    % (name, len(above_threshold), ', '.join(p.name for p in above_threshold))
                 )
-            # zero candidates: leave it for manual creation, nothing to do
+                if populate_ambiguous:
+                    auto_matched |= Partner.browse([p.id for p in above_threshold])
+            # zero above threshold: leave it for manual creation
 
         return auto_matched, suggestions, ambiguous_names
+
+    def _suggest_category(self):
+        """Suggest a product.category using only text already scraped from
+        the source page (the proposed category/genre text where the site
+        provides one, plus the product title/description as a fallback)
+        matched against your own existing categories.
+
+        This is deliberately a local, closed-set similarity match rather
+        than a live web search: the goal is picking the right entry out
+        of *your own* category list, which a search engine has no way to
+        know about anyway - matching scraped text against your own
+        records locally is both simpler and more reliable for that.
+
+        Returns a tuple: (auto_category, suggestion_categories)
+        """
+        self.ensure_one()
+        Category = self.env['product.category']
+        combined_text = ' '.join(
+            t for t in [self.category_text, self.product_name] if t
+        ).lower()
+        if not combined_text:
+            return Category, Category
+
+        # Translate any recognised Bangla genre words in the scraped text
+        # to English, so an English category name (e.g. "Novel") can be
+        # matched even when the source page only gave a Bangla genre word
+        # (e.g. "উপন্যাস") - phonetics alone can't bridge that, since
+        # they're different words, not different spellings of one word.
+        translated_text = self._translate_known_terms(combined_text)
+
+        categories = Category.search([], limit=500)
+        scored = []
+        for cat in categories:
+            cname = (cat.name or '').strip()
+            if len(cname) < 3:
+                continue
+            cname_l = cname.lower()
+            if cname_l in combined_text or cname_l in translated_text:
+                # The category name literally appears in the scraped
+                # text (as given, or after translating known genre
+                # words) - treat as a strong match.
+                scored.append((cat, 1.0))
+            elif self.category_text:
+                translated_category_text = self._translate_known_terms(self.category_text.lower())
+                ratio = max(
+                    self._similarity(cname, self.category_text),
+                    self._similarity(cname, translated_category_text),
+                )
+                if ratio >= CATEGORY_SIMILARITY_THRESHOLD:
+                    scored.append((cat, ratio))
+
+        if not scored:
+            return Category, Category
+
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        best_score = scored[0][1]
+        # Anything within a small margin of the best score is treated as
+        # part of the same "top tier" of candidates.
+        top_tier = [cat for cat, score in scored if score >= best_score - 0.05]
+
+        if len(top_tier) == 1:
+            return top_tier[0], Category
+        return Category, Category.browse([cat.id for cat in top_tier[:5]])
 
     def _find_duplicate_products(self):
         """Search existing product.template records that look like the same
@@ -262,7 +520,53 @@ class importProductFromWebsite(models.TransientModel):
                 [('name', '=ilike', self.product_name.strip())], limit=5
             )
 
+        # Still nothing? Try a fuzzy title match (catches near-duplicates -
+        # typos, "Vol. 1" vs "Volume 1", punctuation differences - that an
+        # exact/ilike match would miss). Uses a high similarity threshold
+        # since a false-positive "duplicate" here would block a real import.
+        if not matches and self.product_name:
+            candidates = self._search_products_by_words(self.product_name, limit=30)
+            fuzzy_matches = [
+                p for p in candidates
+                if self._similarity(self.product_name, p.name) >= PRODUCT_TITLE_SIMILARITY_THRESHOLD
+            ]
+            if fuzzy_matches:
+                matches |= Product.browse([p.id for p in fuzzy_matches])
+
         return matches
+
+    def _search_products_by_words(self, name, limit=50):
+        """Pre-filter product.template using the stored, indexed
+        phonetic_key column via overlapping shingles (see
+        _phonetic_shingles) - finds candidates regardless of whether the
+        scraped title and the catalog entry are in Bengali script,
+        Banglish, or English, and survives small transliteration/folding
+        differences that a whole-word substring search would miss."""
+        shingles = _phonetic_shingles(name)
+        if not shingles:
+            return self.env['product.template']
+        shingle_domain = ['|'] * (len(shingles) - 1) + [('phonetic_key', 'ilike', s) for s in shingles]
+        return self.env['product.template'].search(shingle_domain, limit=limit)
+
+    def _find_nearest_products(self):
+        """When no confident duplicate was found, surface the
+        closest-matching existing products by title similarity anyway -
+        purely informational, doesn't block anything - so a human can
+        glance and catch a same-book-different-title case the duplicate
+        check's higher bar missed."""
+        self.ensure_one()
+        Product = self.env['product.template']
+        if not self.product_name:
+            return Product
+
+        candidates = self._search_products_by_words(self.product_name, limit=50)
+        scored = [
+            (p, self._similarity(self.product_name, p.name)) for p in candidates
+        ]
+        scored = [pair for pair in scored if pair[1] >= PRODUCT_NEAREST_SIMILARITY_FLOOR]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        top = scored[:PRODUCT_NEAREST_MAX_RESULTS]
+        return Product.browse([p.id for p, score in top])
 
     def _optional_fields_map(self):
         """Fields that were scraped but aren't guaranteed to exist on
@@ -356,11 +660,13 @@ class importProductFromWebsite(models.TransientModel):
     # Fetch / scrape
     # ------------------------------------------------------------------
 
-    def _scrape_source_url(self):
+    def _scrape_source_url(self, populate_ambiguous=True):
         """Detect which site self.source_url belongs to and run the
         matching *_products() scraper method, populating the fields on
         this record. Shared by the single-URL 'Fetch Data' button and the
-        bulk-import loop."""
+        bulk-import loop (which passes populate_ambiguous=False, since
+        there's no one to review an author/publisher field that got
+        several unreviewed candidates stuffed into it)."""
         self.ensure_one()
         url = urlparse(self.source_url)
         host = url.hostname or ''
@@ -377,18 +683,37 @@ class importProductFromWebsite(models.TransientModel):
         self.author_ids = False
         self.author_suggestion_ids = False
         self.publisher_suggestion_ids = False
+        self.category_suggestion_ids = False
         self.duplicate_product_ids = False
+        self.nearest_product_ids = False
         self.force_duplicate = False
         result = getattr(self, '%s_products' % domain_name)()
 
         # Auto-link proposed authors/publishers to existing partners where
-        # unambiguous; anything with more than one similar match is left
-        # for the user to pick, via *_suggestion_ids.
+        # unambiguous. When more than one similar match is found: in the
+        # interactive case (populate_ambiguous=True) all candidates are
+        # added directly to Authors/Publishers, so picking the right one
+        # is just a matter of removing the wrong tag(s) with their '×' -
+        # no separate, unclickable "suggestions" list to fight with.
         self.author_ids, self.author_suggestion_ids, _author_ambiguous = \
-            self._find_matching_partners(self.authors, is_writer=True)
+            self._find_matching_partners(self.authors, is_writer=True, populate_ambiguous=populate_ambiguous)
         self.publisher_ids, self.publisher_suggestion_ids, _publisher_ambiguous = \
-            self._find_matching_partners(self.publishers, is_publisher=True)
+            self._find_matching_partners(self.publishers, is_publisher=True, populate_ambiguous=populate_ambiguous)
+
+        # Same idea for category: only auto-fill it if the user hasn't
+        # already picked one themselves (e.g. re-fetching after a manual
+        # override), and only overwrite a category we ourselves suggested
+        # on a previous fetch.
+        auto_category, self.category_suggestion_ids = self._suggest_category()
+        if auto_category and not self.categ_id:
+            self.categ_id = auto_category
+
         self.duplicate_product_ids = self._find_duplicate_products()
+        self.selected_duplicate_id = (
+            self.duplicate_product_ids[0] if len(self.duplicate_product_ids) == 1 else False
+        )
+        if not self.duplicate_product_ids:
+            self.nearest_product_ids = self._find_nearest_products()
         return result
 
     def fetch_data(self):
@@ -396,25 +721,38 @@ class importProductFromWebsite(models.TransientModel):
         warnings = []
 
         duplicates = self.duplicate_product_ids
-        if duplicates:
+        if len(duplicates) == 1:
             warnings.append(
-                "This looks like it might already be in your catalog: %s. "
-                "Please check the 'Possible Duplicates' list before importing, "
-                "or tick 'Create Anyway' if this is intentional."
+                "An identical product already exists: '%s'. Click 'Update Existing "
+                "Product' to edit it directly, or tick 'Create Anyway' if this is "
+                "genuinely a different product."
+                % duplicates.name
+            )
+        elif len(duplicates) > 1:
+            warnings.append(
+                "Multiple possible duplicates found: %s. Pick the correct one in "
+                "'Product to Update' below, then click 'Update Existing Product' - "
+                "or tick 'Create Anyway' if none of them are actually the same product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
         if self.author_suggestion_ids:
             warnings.append(
-                "Multiple existing authors look similar to the proposed name(s) - "
-                "none were auto-selected. Check 'Similar Authors Found' and pick "
-                "the right one in the Authors field."
+                "Multiple existing authors looked similar to the proposed name(s), so "
+                "all of them were added to the Authors field below - remove whichever "
+                "one(s) don't actually belong using the '×' on each tag."
             )
         if self.publisher_suggestion_ids:
             warnings.append(
-                "Multiple existing publishers look similar to the proposed name(s) - "
-                "none were auto-selected. Check 'Similar Publishers Found' and pick "
-                "the right one in the Publishers field."
+                "Multiple existing publishers looked similar to the proposed name(s), "
+                "so all of them were added to the Publishers field below - remove "
+                "whichever one(s) don't actually belong using the '×' on each tag."
+            )
+        if self.category_suggestion_ids:
+            warnings.append(
+                "Multiple existing categories look like a plausible fit - none were "
+                "auto-selected. Check 'Similar Categories Found' and pick the right "
+                "one in the Category field."
             )
 
         if warnings:
@@ -491,10 +829,18 @@ class importProductFromWebsite(models.TransientModel):
         self.ensure_one()
         duplicates = self._find_duplicate_products()
         if duplicates and not self.force_duplicate:
+            if len(duplicates) == 1:
+                raise UserError(
+                    "An identical product already exists: '%s'.\n\n"
+                    "Use 'Update Existing Product' to edit it directly, or tick "
+                    "'Create Anyway' if this is genuinely a different product."
+                    % duplicates.name
+                )
             raise UserError(
-                "This looks like it might already be in your catalog: %s.\n\n"
-                "Tick 'Create Anyway' if you still want to import this as a new product, "
-                "or use 'Update Existing Product' instead to refresh that record."
+                "Multiple possible duplicates found: %s.\n\n"
+                "Pick the correct one in 'Product to Update' and use 'Update Existing "
+                "Product', or tick 'Create Anyway' if none of them are actually the "
+                "same product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
@@ -515,17 +861,27 @@ class importProductFromWebsite(models.TransientModel):
         }
 
     def update_existing_product(self):
-        """Instead of creating a new product, refresh the fields on the
-        best-matching existing product (found the same way duplicates are
-        detected: ISBN, then source URL, then name)."""
+        """Instead of creating a new product, refresh the fields on an
+        existing product - either the one the user explicitly picked in
+        'Product to Update' (required when more than one duplicate was
+        found), or the single unambiguous duplicate."""
         self.ensure_one()
-        duplicates = self._find_duplicate_products()
-        if not duplicates:
-            raise UserError(
-                "No matching existing product found to update - use 'Import Product' "
-                "to create a new one instead."
-            )
-        product = duplicates[0]
+        product = self.selected_duplicate_id
+        if not product:
+            duplicates = self._find_duplicate_products()
+            if not duplicates:
+                raise UserError(
+                    "No matching existing product found to update - use 'Import Product' "
+                    "to create a new one instead."
+                )
+            if len(duplicates) > 1:
+                raise UserError(
+                    "Multiple possible duplicates found: %s.\n\n"
+                    "Please pick the one you want to update in the 'Product to Update' "
+                    "field first."
+                    % ', '.join(duplicates.mapped('name'))
+                )
+            product = duplicates[0]
 
         vals = {}
         if self.price:
@@ -600,7 +956,7 @@ class importProductFromWebsite(models.TransientModel):
             })
             try:
                 try:
-                    temp._scrape_source_url()
+                    temp._scrape_source_url(populate_ambiguous=False)
                 except UserError as e:
                     raise
                 except Exception as e:
@@ -626,9 +982,16 @@ class importProductFromWebsite(models.TransientModel):
 
                 product = temp._create_product_record()
                 created += 1
-                note = ""
+                note_parts = []
                 if temp.author_suggestion_ids or temp.publisher_suggestion_ids:
-                    note = " (review author/publisher - multiple similar matches found, none linked)"
+                    note_parts.append("author/publisher")
+                if temp.category_suggestion_ids:
+                    note_parts.append("category")
+                if temp.nearest_product_ids:
+                    note_parts.append("possible near-duplicate by name")
+                note = ""
+                if note_parts:
+                    note = " (review %s - multiple similar matches found, none applied)" % ' & '.join(note_parts)
                 summary_lines.append("CREATED  %s  ->  %s%s" % (url, product.display_name, note))
                 Log.create({
                     'source_url': url,

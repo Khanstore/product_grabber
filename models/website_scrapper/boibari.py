@@ -50,6 +50,7 @@ class importProductFromBoibari(models.TransientModel):
         self.editions     = specs.get('edition', '')
         self.language     = specs.get('language', '')
         self.country      = specs.get('country', '')
+        self.category_text = specs.get('category', '')
         self.weight       = specs.get('weight', 0.0)
 
         logging.info(f"✓ Boibari scraped: {self.product_name}")

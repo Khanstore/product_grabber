@@ -24,6 +24,7 @@
 
                                     <field name="authors"/>
                                     <field name="publishers"/>
+                                    <field name="category_text"/>
                                     <field name="stock_qty"/>
                                     <field name="ecommerce_description"/>
                                     <field name="face_value"/>
@@ -37,12 +38,10 @@
                                 </group>
                                 <group>
                                     <field name="categ_id"/>
+                                    <field name="category_suggestion_ids" widget="many2many_tags" readonly="1"
+                                           invisible="not category_suggestion_ids"/>
                                     <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', True)]" context="{'default_is_writer':1}"/>
-                                    <field name="author_suggestion_ids" widget="many2many_tags" readonly="1"
-                                           invisible="not author_suggestion_ids"/>
                                     <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', True)]" context="{'default_is_publisher':1}"/>
-                                    <field name="publisher_suggestion_ids" widget="many2many_tags" readonly="1"
-                                           invisible="not publisher_suggestion_ids"/>
                                     <field name="image_url" />
                                     <field name="google_search_url"
                                            widget="url"
@@ -52,7 +51,13 @@
                                 </group>
                                 <group invisible="not duplicate_product_ids" string="Possible Duplicates Found">
                                     <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" string="Matching Products"/>
+                                    <field name="selected_duplicate_id"
+                                           invisible="not duplicate_product_ids"
+                                           required="duplicate_product_ids and not force_duplicate"/>
                                     <field name="force_duplicate"/>
+                                </group>
+                                <group invisible="not nearest_product_ids" string="Closest Matching Products (no confident duplicate found)">
+                                    <field name="nearest_product_ids" widget="many2many_tags" readonly="1" string="Worth a Look"/>
                                 </group>
                                 <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
                                 <button string="Update Existing Product" type="object" name="update_existing_product"

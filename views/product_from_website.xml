@@ -51,17 +51,19 @@
                                 </group>
                                 <group invisible="not duplicate_product_ids" string="Possible Duplicates Found">
                                     <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" string="Matching Products"/>
-                                    <field name="selected_duplicate_id"
-                                           invisible="not duplicate_product_ids"
-                                           required="duplicate_product_ids and not force_duplicate"/>
                                     <field name="force_duplicate"/>
                                 </group>
                                 <group invisible="not nearest_product_ids" string="Closest Matching Products (no confident duplicate found)">
                                     <field name="nearest_product_ids" widget="many2many_tags" readonly="1" string="Worth a Look"/>
                                 </group>
+                                <group invisible="not duplicate_product_ids and not nearest_product_ids" string="Update an Existing Product Instead">
+                                    <field name="selected_duplicate_id"
+                                           string="Product to Update"
+                                           help="Auto-filled when there's exactly one confident duplicate. You can also pick any product here yourself - including one from 'Worth a Look' above - if you decide it's actually the same item, then click 'Update Existing Product' below instead of importing a new one."/>
+                                </group>
                                 <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
                                 <button string="Update Existing Product" type="object" name="update_existing_product"
-                                        class="btn-secondary" invisible="not duplicate_product_ids"/>
+                                        class="btn-secondary" invisible="not selected_duplicate_id"/>
                                 <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-primary"/>
                             </group>
                         </page>

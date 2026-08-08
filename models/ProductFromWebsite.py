@@ -189,10 +189,10 @@ class importProductFromWebsite(models.TransientModel):
     selected_duplicate_id = fields.Many2one(
         'product.template',
         string="Product to Update",
-        domain="[('id', 'in', duplicate_product_ids)]",
-        help="When exactly one duplicate is found, this is filled in automatically. "
-             "When more than one is found, pick which one 'Update Existing Product' "
-             "should edit."
+        help="Auto-filled when there's exactly one confident duplicate. You can also "
+             "search and pick any product yourself - including one of the 'Closest "
+             "Matching Products' below, if you decide it's actually the same item - "
+             "then use 'Update Existing Product' instead of creating a new one."
     )
     nearest_product_ids = fields.Many2many(
         'product.template',
@@ -770,14 +770,13 @@ class importProductFromWebsite(models.TransientModel):
 
     def _build_product_vals(self):
         self.ensure_one()
+        target_fields = self.env['product.template']._fields
         vals = {
             'name': self.product_name,
             'list_price': self.price,
             'compare_list_price': self.face_value,
             'description_ecommerce': self.ecommerce_description,
-            'image_url_template': self.image_url,
             'is_storable': True,
-            'pages': self.pages,
             'publisher_link': self.source_url,
             'weight': self.weight,
             'categ_id': self.categ_id.id if self.categ_id else False,
@@ -793,12 +792,14 @@ class importProductFromWebsite(models.TransientModel):
         if self.publication_date:
             vals['last_edition'] = self.publication_date
 
-        # Fields defined by the book_shop module that this addon depends
-        # on - only set them if they actually exist on the model, so this
-        # keeps working even against a product.template that doesn't
-        # define all of them.
-        target_fields = self.env['product.template']._fields
-        for fname, fval in self._optional_fields_map().items():
+        # Fields that are assumptions about what the book_shop module
+        # defines on product.template - only set them if they actually
+        # exist, so a schema that's missing one of these (like
+        # 'image_url_template', which turned out not to exist) doesn't
+        # block product creation entirely over a single missing field.
+        optional_vals = {'image_url_template': self.image_url, 'pages': self.pages}
+        optional_vals.update(self._optional_fields_map())
+        for fname, fval in optional_vals.items():
             if fname in target_fields and fval:
                 vals[fname] = fval
 
@@ -883,6 +884,8 @@ class importProductFromWebsite(models.TransientModel):
                 )
             product = duplicates[0]
 
+        target_fields = self.env['product.template']._fields
+
         vals = {}
         if self.price:
             vals['list_price'] = self.price
@@ -891,11 +894,12 @@ class importProductFromWebsite(models.TransientModel):
         if self.ecommerce_description:
             vals['description_ecommerce'] = self.ecommerce_description
         if self.image_url:
-            vals['image_url_template'] = self.image_url
+            if 'image_url_template' in target_fields:
+                vals['image_url_template'] = self.image_url
             image_b64 = self._download_image_b64(self.image_url)
             if image_b64:
                 vals['image_1920'] = image_b64
-        if self.pages:
+        if self.pages and 'pages' in target_fields:
             vals['pages'] = self.pages
         if self.weight:
             vals['weight'] = self.weight
@@ -908,7 +912,6 @@ class importProductFromWebsite(models.TransientModel):
         if self.publisher_ids:
             vals['publisher_ids'] = [(4, pid) for pid in self.publisher_ids.ids]
 
-        target_fields = self.env['product.template']._fields
         for fname, fval in self._optional_fields_map().items():
             if fname in target_fields and fval:
                 vals[fname] = fval

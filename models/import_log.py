@@ -1,3 +1,4 @@
+from urllib.parse import urlparse
 from odoo import models, fields, api
 
 
@@ -8,6 +9,7 @@ class ImportProductLog(models.Model):
 
     name = fields.Char(string="Summary", compute='_compute_name', store=True)
     source_url = fields.Char(string="Source URL", required=True)
+    source_domain = fields.Char(string="Source Site", compute='_compute_source_domain', store=True)
     status = fields.Selection([
         ('created', 'Created'),
         ('updated', 'Updated'),
@@ -24,3 +26,14 @@ class ImportProductLog(models.Model):
     def _compute_name(self):
         for rec in self:
             rec.name = "[%s] %s" % (rec.status or '', rec.source_url or '')
+
+    @api.depends('source_url')
+    def _compute_source_domain(self):
+        for rec in self:
+            host = ''
+            if rec.source_url:
+                try:
+                    host = urlparse(rec.source_url).hostname or ''
+                except ValueError:
+                    host = ''
+            rec.source_domain = host.replace('www.', '') if host else False

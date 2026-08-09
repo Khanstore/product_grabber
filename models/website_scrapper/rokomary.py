@@ -94,13 +94,41 @@ class RokomariExtractor(BaseBookExtractor):
         return "Unknown Product"
 
     def get_current_price(self):
+        # Prefer the structured product:price:amount meta tag - it's
+        # unambiguous (appears exactly once per page) and verified
+        # correct against a real product page. The old DOM selector
+        # (class 'sell-price') is kept as a fallback, but on its own it
+        # was unreliable: .find() only returns the FIRST match on the
+        # whole page, and this class name isn't necessarily unique to
+        # the main product - "you may also like" / "frequently bought
+        # together" widgets further down the same page can carry similar
+        # markup, silently grabbing a different product's price instead.
+        meta = self.soup.find("meta", property="product:price:amount")
+        if meta and meta.get("content"):
+            parsed = self._parse_price(meta["content"])
+            if parsed:
+                return parsed
         elem = self.soup.find(class_='sell-price')
         return self._parse_price(elem)
 
     def get_original_price(self):
-        # This is the method causing the AttributeError
+        # There's no separate "original price" meta tag, but the
+        # discount-percentage meta tag lets the original price be
+        # derived reliably from the (already-verified) current price:
+        # original = current / (1 - discount%). Falls back to the old
+        # DOM selector, and finally to just the current price (no
+        # discount), if a discount percentage isn't present.
+        current = self.get_current_price()
+        discount_meta = self.soup.find("meta", property="product:custom_label_2")
+        if discount_meta and discount_meta.get("content") and current:
+            match = re.search(r'(\d+(?:\.\d+)?)\s*%', discount_meta["content"])
+            if match:
+                discount_pct = float(match.group(1))
+                if 0 < discount_pct < 100:
+                    return round(current / (1 - discount_pct / 100), 2)
         elem = self.soup.find(class_='original-price')
-        return self._parse_price(elem)
+        parsed = self._parse_price(elem)
+        return parsed if parsed else current
 
     def get_stock_quantity(self):
         stock_elem = self.soup.find("span", id="available-quantity")

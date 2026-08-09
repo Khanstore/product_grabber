@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="product_gallery_view_kanban" model="ir.ui.view">
+            <field name="name">product.grabber.gallery.kanban</field>
+            <field name="model">product.template</field>
+            <field name="arch" type="xml">
+                <kanban class="o_kanban_mobile" sample="1">
+                    <field name="name"/>
+                    <field name="list_price"/>
+                    <field name="isbn"/>
+                    <templates>
+                        <t t-name="card">
+                            <div class="oe_kanban_global_click" style="text-align:center;">
+                                <img t-att-src="kanban_image('product.template', 'image_1024', record.id.raw_value)"
+                                     alt="Cover"
+                                     style="max-height:220px; max-width:100%; object-fit:contain; margin-bottom:6px;"/>
+                                <div>
+                                    <strong><field name="name"/></strong>
+                                </div>
+                                <div t-if="record.isbn.raw_value" class="text-muted">
+                                    ISBN: <field name="isbn"/>
+                                </div>
+                                <div>
+                                    <field name="list_price" widget="monetary"/>
+                                </div>
+                            </div>
+                        </t>
+                    </templates>
+                </kanban>
+            </field>
+        </record>
+
+        <record id="product_gallery_view_list" model="ir.ui.view">
+            <field name="name">product.grabber.gallery.list</field>
+            <field name="model">product.template</field>
+            <field name="arch" type="xml">
+                <list>
+                    <field name="name"/>
+                    <field name="isbn"/>
+                    <field name="list_price"/>
+                    <field name="publisher_link" optional="hide"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="product_gallery_search" model="ir.ui.view">
+            <field name="name">product.grabber.gallery.search</field>
+            <field name="model">product.template</field>
+            <field name="arch" type="xml">
+                <search>
+                    <field name="name"/>
+                    <field name="isbn"/>
+                    <field name="author_ids"/>
+                    <field name="publisher_ids"/>
+                </search>
+            </field>
+        </record>
+
+        <record id="action_product_gallery" model="ir.actions.act_window">
+            <field name="name">Book Gallery</field>
+            <field name="res_model">product.template</field>
+            <field name="view_mode">kanban,list,form</field>
+            <field name="domain">[('publisher_link', '!=', False)]</field>
+            <field name="context">{'create': False}</field>
+        </record>
+    </data>
+</odoo>

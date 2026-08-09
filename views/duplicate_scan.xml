@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="duplicate_scan_wizard_view_form" model="ir.ui.view">
+            <field name="name">product.grabber.duplicate.scan.wizard.form</field>
+            <field name="model">product.grabber.duplicate.scan.wizard</field>
+            <field name="arch" type="xml">
+                <form>
+                    <p>Scans your existing catalog for authors, publishers, and products that
+                       look like duplicates - using the same phonetic/fuzzy matching used
+                       during import. This only reports possible matches; nothing is changed
+                       automatically. Author/Publisher matches can be merged from the results
+                       list (only the Authors/Publishers links this module manages); product
+                       matches are for manual review.</p>
+                    <group>
+                        <field name="scan_authors"/>
+                        <field name="scan_publishers"/>
+                        <field name="scan_products"/>
+                    </group>
+                    <footer>
+                        <button string="Run Scan" type="object" name="action_run_scan" class="btn-primary"/>
+                        <button string="Cancel" special="cancel" class="btn-secondary"/>
+                    </footer>
+                </form>
+            </field>
+        </record>
+
+        <record id="action_duplicate_scan_wizard" model="ir.actions.act_window">
+            <field name="name">Scan for Duplicates</field>
+            <field name="res_model">product.grabber.duplicate.scan.wizard</field>
+            <field name="view_mode">form</field>
+            <field name="target">new</field>
+        </record>
+
+        <record id="duplicate_view_list" model="ir.ui.view">
+            <field name="name">product.grabber.duplicate.list</field>
+            <field name="model">product.grabber.duplicate</field>
+            <field name="arch" type="xml">
+                <list decoration-muted="state != 'pending'" create="false">
+                    <field name="kind"/>
+                    <field name="name_1"/>
+                    <field name="name_2"/>
+                    <field name="similarity" widget="percentage"/>
+                    <field name="state"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="duplicate_view_form" model="ir.ui.view">
+            <field name="name">product.grabber.duplicate.form</field>
+            <field name="model">product.grabber.duplicate</field>
+            <field name="arch" type="xml">
+                <form create="false">
+                    <header>
+                        <button string="Merge (Author/Publisher only)" type="object" name="action_merge_partners"
+                                class="btn-primary" invisible="kind == 'product' or state != 'pending'"
+                                confirm="This will repoint this module's Authors/Publishers links from Record 2 to Record 1, and archive Record 2. Continue?"/>
+                        <button string="Not a Duplicate" type="object" name="action_mark_ignored"
+                                invisible="state != 'pending'"/>
+                        <button string="Reset to Pending" type="object" name="action_mark_pending"
+                                invisible="state == 'pending'"/>
+                        <field name="state" widget="statusbar" statusbar_visible="pending,merged,ignored"/>
+                    </header>
+                    <sheet>
+                        <group>
+                            <field name="kind"/>
+                            <field name="similarity" widget="percentage"/>
+                        </group>
+                        <group string="Record 1">
+                            <field name="name_1"/>
+                            <field name="partner_1_id" invisible="kind == 'product'"/>
+                            <field name="product_1_id" invisible="kind != 'product'"/>
+                            <button string="Open" type="object" name="action_open_record_1" class="btn-link"/>
+                        </group>
+                        <group string="Record 2">
+                            <field name="name_2"/>
+                            <field name="partner_2_id" invisible="kind == 'product'"/>
+                            <field name="product_2_id" invisible="kind != 'product'"/>
+                            <button string="Open" type="object" name="action_open_record_2" class="btn-link"/>
+                        </group>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="duplicate_view_search" model="ir.ui.view">
+            <field name="name">product.grabber.duplicate.search</field>
+            <field name="model">product.grabber.duplicate</field>
+            <field name="arch" type="xml">
+                <search>
+                    <field name="name_1"/>
+                    <field name="name_2"/>
+                    <filter string="Needs Review" name="pending" domain="[('state', '=', 'pending')]"/>
+                    <filter string="Authors" name="kind_author" domain="[('kind', '=', 'author')]"/>
+                    <filter string="Publishers" name="kind_publisher" domain="[('kind', '=', 'publisher')]"/>
+                    <filter string="Products" name="kind_product" domain="[('kind', '=', 'product')]"/>
+                    <group expand="0" string="Group By">
+                        <filter string="Type" name="group_kind" context="{'group_by': 'kind'}"/>
+                        <filter string="Status" name="group_state" context="{'group_by': 'state'}"/>
+                    </group>
+                </search>
+            </field>
+        </record>
+
+        <record id="action_product_grabber_duplicate" model="ir.actions.act_window">
+            <field name="name">Possible Duplicates</field>
+            <field name="res_model">product.grabber.duplicate</field>
+            <field name="view_mode">list,form</field>
+            <field name="context">{'search_default_pending': 1}</field>
+        </record>
+    </data>
+</odoo>

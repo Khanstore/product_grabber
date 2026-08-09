@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 import base64
-from .phonetic_utils import phonetic_key
+from .phonetic_utils import phonetic_key, similarity
 
 _logger = logging.getLogger(__name__)
 
@@ -340,19 +340,12 @@ class importProductFromWebsite(models.TransientModel):
         return translated
 
     def _similarity(self, a, b):
-        """0-1 similarity score between two strings. Combines a plain
-        character comparison with a phonetic-key comparison (see
-        phonetic_utils.phonetic_key) and takes the better of the two, so
-        it catches both simple typos and script/spelling variants
-        (Bengali script vs Banglish vs English) of the same name. No
-        external service or API key - closed-set lookup against your own
-        catalog."""
-        if not a or not b:
-            return 0.0
-        raw_score = difflib.SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
-        phon_a, phon_b = phonetic_key(a), phonetic_key(b)
-        phon_score = difflib.SequenceMatcher(None, phon_a, phon_b).ratio() if phon_a and phon_b else 0.0
-        return max(raw_score, phon_score)
+        """0-1 similarity score between two strings - see
+        phonetic_utils.similarity() for the actual logic, shared with the
+        duplicate-scan tool so both use exactly the same notion of
+        'similar'. No external service or API key - closed-set lookup
+        against your own catalog."""
+        return similarity(a, b)
 
     def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False, populate_ambiguous=True):
         """Search existing res.partner records (authors/publishers) that

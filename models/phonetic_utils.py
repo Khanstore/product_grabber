@@ -76,3 +76,19 @@ def phonetic_tokens(text, min_len=2):
     if not key:
         return []
     return [w for w in key.split(' ') if len(w) >= min_len]
+
+
+def similarity(a, b):
+    """0-1 similarity score between two strings. Combines a plain
+    character comparison with a phonetic-key comparison and takes the
+    better of the two, so it catches both simple typos and script/spelling
+    variants (Bengali script vs Banglish vs English) of the same name.
+    Shared by the import wizard and the duplicate-scan tool, so both use
+    exactly the same notion of "similar"."""
+    import difflib
+    if not a or not b:
+        return 0.0
+    raw_score = difflib.SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
+    key_a, key_b = phonetic_key(a), phonetic_key(b)
+    phon_score = difflib.SequenceMatcher(None, key_a, key_b).ratio() if key_a and key_b else 0.0
+    return max(raw_score, phon_score)

@@ -186,21 +186,42 @@ class WafilifExtractor(BaseBookExtractor):
         return ''
 
     def get_image_url(self) -> str:
+        # Wafilife's JSON-LD 'image' field can be empty or a placeholder
+        # on some pages (e.g. pre-order items not yet fully published) -
+        # in that case the ORIGINAL code returned whatever it found
+        # (even an empty string) without trying the other sources. Now
+        # each candidate is validated before being accepted, so a bad
+        # first source properly falls through to the next one.
+        def _looks_like_image_url(url):
+            if not url:
+                return False
+            url = url.strip()
+            # Confirmed broken placeholder seen on at least one real
+            # page - Wafilife's own og:image sometimes points here
+            # instead of an actual image.
+            if url in ('https://www.wafilife.com/image', 'https://www.wafilife.com/image/'):
+                return False
+            return url.startswith('http')
+
         # 1. JSON-LD image list — first entry is the full-size image
         images = self._ld_get('image')
-        if images:
-            if isinstance(images, list) and images:
-                return str(images[0]).strip()
-            if isinstance(images, str):
-                return images.strip()
+        if isinstance(images, list) and images:
+            candidate = str(images[0]).strip()
+            if _looks_like_image_url(candidate):
+                return candidate
+        elif isinstance(images, str) and _looks_like_image_url(images):
+            return images.strip()
+
         # 2. img alt="thumbnail"
         img = self.soup.find('img', {'alt': 'thumbnail'})
-        if img and img.get('src'):
+        if img and _looks_like_image_url(img.get('src')):
             return img['src'].strip()
+
         # 3. og:image
         og = self.soup.find('meta', {'property': 'og:image'})
-        if og and og.get('content'):
+        if og and _looks_like_image_url(og.get('content')):
             return og['content'].strip()
+
         return ''
 
     def get_isbn(self) -> str:

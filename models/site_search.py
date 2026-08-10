@@ -8,16 +8,47 @@ from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
-# Per-site search configuration. Only Rokomari is wired up with a real,
-# verified search URL - confirmed against Rokomari's own homepage search
-# links (e.g. "/search?term=...&search_type=BOOK"). The search RESULTS
-# page itself couldn't be fetched to inspect its exact markup (blocked by
-# robots.txt), so extraction below deliberately doesn't depend on
-# guessed CSS classes - it scans for links matching the confirmed
-# product-URL pattern (/book/<id>/<slug>, verified against many real
-# product pages) instead. Other sites aren't listed here on purpose:
-# guessing their search URL/markup risks silently returning nothing (or
-# wrong results) rather than a clear "not supported yet".
+# All sites this module can import products FROM (matching the domain
+# check in each */website_scrapper/*.py file exactly) - listed here so
+# the search dropdown reflects everything the module supports, even
+# though live search is currently only wired up for Rokomari (see
+# SITE_SEARCH_CONFIG below). Picking any other site gives a clear
+# "not supported yet" message rather than guessing at its search URL.
+ALL_SUPPORTED_SITES = {
+    'anannyabooks': 'Anannya Books',
+    'anyaprokash': 'Anyaprokash',
+    'baatighar': 'Baatighar',
+    'boibari': 'Boibari',
+    'boibazar': 'Boi Bazar',
+    'guardianpubs': 'Guardian Publications',
+    'harekrokom': 'Harek Rokom',
+    'litonpublication': 'Liton Publication',
+    'mayurpankhi': 'Mayurpankhi',
+    'mowlabrothers': 'Mowla Brothers',
+    'pbs': "PBS (Professor's Bookshop)",
+    'professorsprokashon': "Professor's Prokashon",
+    'prothoma': 'Prothoma',
+    'rokomari': 'Rokomari',
+    'somoy': 'Somoy',
+    'sottayon': 'Sottayon',
+    'wafilife': 'Wafilife',
+}
+
+# Per-site LIVE SEARCH configuration - only Rokomari is wired up with a
+# real, verified search URL - confirmed against Rokomari's own homepage
+# search links (e.g. "/search?term=...&search_type=BOOK"). The search
+# RESULTS page itself couldn't be fetched to inspect its exact markup
+# (blocked by robots.txt), so extraction below deliberately doesn't
+# depend on guessed CSS classes - it scans for links matching the
+# confirmed product-URL pattern (/book/<id>/<slug>, verified against
+# many real product pages) instead.
+#
+# Other sites aren't configured here on purpose: several that were
+# checked (PBS, Anannya) turned out to have JS-driven search boxes with
+# no plain URL to construct, and guessing the rest risks silently
+# returning nothing (or wrong results) instead of a clear error. Add an
+# entry here once a site's real search URL has been confirmed - e.g. by
+# manually searching on the site and pasting the resulting URL.
 SITE_SEARCH_CONFIG = {
     'rokomari': {
         'label': 'Rokomari',
@@ -60,7 +91,7 @@ class ProductGrabberSiteSearch(models.TransientModel):
 
     query = fields.Char(string="Search (title, author, or ISBN)")
     site = fields.Selection(
-        [(key, cfg['label']) for key, cfg in SITE_SEARCH_CONFIG.items()],
+        list(ALL_SUPPORTED_SITES.items()),
         default='rokomari', required=True,
     )
     result_ids = fields.One2many('product.grabber.site.search.result', 'wizard_id', string="Results")
@@ -72,10 +103,12 @@ class ProductGrabberSiteSearch(models.TransientModel):
 
         config = SITE_SEARCH_CONFIG.get(self.site)
         if not config:
+            site_label = ALL_SUPPORTED_SITES.get(self.site, self.site)
             raise UserError(
-                "Live search isn't wired up for this site yet - only Rokomari's "
-                "search is currently supported. You can still paste a URL directly "
-                "on the Import page for other sites."
+                "Live search isn't wired up for %s yet - only Rokomari's search is "
+                "currently supported (its search URL was verified directly). Import "
+                "from %s still works as normal - just paste the product URL on the "
+                "Import page instead." % (site_label, site_label)
             )
 
         search_url = config['search_url'].format(query=urllib.parse.quote(self.query.strip()))

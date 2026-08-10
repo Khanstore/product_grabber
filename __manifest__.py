@@ -1,6 +1,6 @@
 {
     'name': 'product_grabber',
-    'version': '18.0.0.13',
+    'version': '18.0.0.18',
     'author': 'SM Ashraf',
     'category': 'Reporting',
     'summary': 'grab Product data to odoo from Rokomary, PBS, Sottayan etc',
@@ -14,6 +14,7 @@
         'views/product_gallery.xml',
         'views/duplicate_scan.xml',
         'views/site_search.xml',
+        'views/dashboard.xml',
         'views/menu.xml',
         'data/ir_cron.xml',
     ],

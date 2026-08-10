@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="dashboard_view_form" model="ir.ui.view">
+            <field name="name">product.grabber.dashboard.form</field>
+            <field name="model">product.grabber.dashboard</field>
+            <field name="arch" type="xml">
+                <form>
+                    <sheet>
+                        <h1>Grabb Products from Websites</h1>
+                        <div class="oe_button_box" name="button_box">
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_product_from_website_wizard)d" icon="fa-cloud-download">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_text">Import a Book</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_site_search)d" icon="fa-search">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_text">Search &amp; Import</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_product_gallery)d" icon="fa-book">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_value"><field name="total_books"/></span>
+                                    <span class="o_stat_text">Books in Catalog</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_import_product_dashboard)d" icon="fa-bar-chart">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_value"><field name="imports_today"/></span>
+                                    <span class="o_stat_text">Imports Today</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_product_grabber_duplicate)d" icon="fa-clone">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_value"><field name="pending_duplicates"/></span>
+                                    <span class="o_stat_text">Pending Duplicates</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_duplicate_scan_wizard)d" icon="fa-refresh">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_text">Scan for Duplicates</span>
+                                </div>
+                            </button>
+                            <button class="oe_stat_button" type="action"
+                                    name="%(action_import_product_log)d" icon="fa-list">
+                                <div class="o_stat_info">
+                                    <span class="o_stat_text">Import Log</span>
+                                </div>
+                            </button>
+                        </div>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="action_product_grabber_dashboard_home" model="ir.actions.act_window">
+            <field name="name">Grabb Products</field>
+            <field name="res_model">product.grabber.dashboard</field>
+            <field name="view_mode">form</field>
+            <field name="target">current</field>
+        </record>
+    </data>
+</odoo>

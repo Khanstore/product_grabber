@@ -9,6 +9,7 @@ from odoo import models, fields, api
 from odoo.exceptions import UserError
 import base64
 from .phonetic_utils import phonetic_key, similarity
+from .site_search import ALL_SUPPORTED_SITES
 
 _logger = logging.getLogger(__name__)
 
@@ -265,6 +266,20 @@ class importProductFromWebsite(models.TransientModel):
              "and imported automatically."
     )
     bulk_import_summary = fields.Text(string="Last Bulk Import Result", readonly=True)
+    bulk_import_log_ids = fields.Many2many(
+        'import.product.log',
+        'import_product_bulk_log_rel',
+        'wizard_id',
+        'log_id',
+        string="This Run's Results",
+        readonly=True,
+    )
+    review_notice = fields.Text(
+        readonly=True,
+        help="Same content as the warning popup after Fetch Data, kept here so it "
+             "doesn't disappear once the popup is dismissed."
+    )
+    source_site_label = fields.Char(readonly=True, help="Which supported site this was fetched from.")
 
     google_search_url = fields.Char(compute='_compute_google_search_url')
 
@@ -680,6 +695,8 @@ class importProductFromWebsite(models.TransientModel):
         self.duplicate_product_ids = False
         self.nearest_product_ids = False
         self.force_duplicate = False
+        self.review_notice = False
+        self.source_site_label = ALL_SUPPORTED_SITES.get(domain_name, host)
         result = getattr(self, '%s_products' % domain_name)()
 
         # Auto-link proposed authors/publishers to existing partners where
@@ -749,10 +766,11 @@ class importProductFromWebsite(models.TransientModel):
             )
 
         if warnings:
+            self.review_notice = '\n\n'.join(warnings)
             return {
                 'warning': {
                     'title': "Please review before importing",
-                    'message': '\n\n'.join(warnings),
+                    'message': self.review_notice,
                 }
             }
         return result
@@ -940,6 +958,7 @@ class importProductFromWebsite(models.TransientModel):
         Log = self.env['import.product.log']
         created = duplicate = failed = 0
         summary_lines = []
+        run_log_ids = []
 
         for idx, url in enumerate(urls):
             if idx:
@@ -968,12 +987,13 @@ class importProductFromWebsite(models.TransientModel):
                         "SKIPPED (duplicate)  %s  ->  matches %s"
                         % (url, ', '.join(duplicates.mapped('name')))
                     )
-                    Log.create({
+                    log = Log.create({
                         'source_url': url,
                         'status': 'duplicate',
                         'message': "Matches: %s" % ', '.join(duplicates.mapped('name')),
                         'product_id': duplicates[0].id,
                     })
+                    run_log_ids.append(log.id)
                     continue
 
                 product = temp._create_product_record()
@@ -989,17 +1009,19 @@ class importProductFromWebsite(models.TransientModel):
                 if note_parts:
                     note = " (review %s - multiple similar matches found, none applied)" % ' & '.join(note_parts)
                 summary_lines.append("CREATED  %s  ->  %s%s" % (url, product.display_name, note))
-                Log.create({
+                log = Log.create({
                     'source_url': url,
                     'status': 'created',
                     'product_id': product.id,
                     'message': note.strip(" ()") or False,
                 })
+                run_log_ids.append(log.id)
 
             except UserError as e:
                 failed += 1
                 summary_lines.append("FAILED  %s  ->  %s" % (url, e))
-                Log.create({'source_url': url, 'status': 'error', 'message': str(e)})
+                log = Log.create({'source_url': url, 'status': 'error', 'message': str(e)})
+                run_log_ids.append(log.id)
             finally:
                 temp.unlink()
 
@@ -1007,6 +1029,7 @@ class importProductFromWebsite(models.TransientModel):
             "%d created, %d skipped as duplicates, %d failed.\n\n%s"
             % (created, duplicate, failed, '\n'.join(summary_lines))
         )
+        self.bulk_import_log_ids = [(6, 0, run_log_ids)]
 
         return {
             'type': 'ir.actions.client',

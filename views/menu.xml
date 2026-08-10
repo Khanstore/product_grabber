@@ -4,7 +4,14 @@
               name="Grabb Products from websites"
               sequence="85"
               web_icon="product_grabber,static/description/icon.png"
+              action="action_product_grabber_dashboard_home"
               groups="base.group_user"/>
+
+    <menuitem id="grab_products_home"
+              name="Home"
+              parent="product_grabber_root"
+              action="action_product_grabber_dashboard_home"
+              sequence="5"/>
 
     <!-- Commissions -->
     <menuitem id="grab_products"

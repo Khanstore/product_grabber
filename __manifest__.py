@@ -1,6 +1,6 @@
 {
     'name': 'product_grabber',
-    'version': '18.0.0.18',
+    'version': '18.0.0.25',
     'author': 'SM Ashraf',
     'category': 'Reporting',
     'summary': 'grab Product data to odoo from Rokomary, PBS, Sottayan etc',
@@ -18,6 +18,11 @@
         'views/menu.xml',
         'data/ir_cron.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'product_grabber/static/src/css/product_grabber.css',
+        ],
+    },
     'installable': True,
     'license': 'LGPL-3',
     'application': True,

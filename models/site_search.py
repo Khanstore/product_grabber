@@ -34,7 +34,7 @@ ALL_SUPPORTED_SITES = {
     'wafilife': 'Wafilife',
 }
 
-# Per-site LIVE SEARCH configuration - only Rokomari is wired up with a
+# Per-site LIVE SEARCH configuration. Only Rokomari is wired up with a
 # real, verified search URL - confirmed against Rokomari's own homepage
 # search links (e.g. "/search?term=...&search_type=BOOK"). The search
 # RESULTS page itself couldn't be fetched to inspect its exact markup

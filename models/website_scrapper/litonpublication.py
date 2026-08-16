@@ -54,6 +54,23 @@ class ImportProductFromLitonPublication(models.TransientModel):
             extractor = LitonPublicationExtractor(soup)
 
             self.product_name = extractor.get_title()
+            self.price = extractor.get_sale_price()
+            # get_printed_price() returns 0.0 when there's no discount -
+            # in that case the printed/original price just equals the
+            # sale price.
+            self.face_value = extractor.get_printed_price() or self.price
+            self.stock_qty = extractor.get_stock_quantity()
+            self.ecommerce_description = extractor.get_description() or ''
+            self.image_url = extractor.get_image_url()
+
+            specs = extractor.get_specifications()
+            self.isbn = specs.get('isbn', '')
+            self.authors = specs.get('author', '')
+            self.publishers = specs.get('publisher', '')
+            self.pages = specs.get('pages', '')
+            self.editions = specs.get('edition', '')
+            self.language = specs.get('language', '')
+            self.country = specs.get('country', '')
 
             return True
 
@@ -110,13 +127,6 @@ class LitonPublicationExtractor(BaseBookExtractor):
             if amount:
                 return self._parse_price(amount.get_text(strip=True))
         return 0.0
-    def get_authors(self) :
-        author_div =self.soup.find("div",{'class':"product-details-list"})
-        if author_div:
-            author = author_div.find("span", {"class": "previ-price"})
-            if amount:
-                return self._parse_price(amount.get_text(strip=True))
-        return 0.0
     def get_printed_price(self) -> float:
         """
         Original crossed-out price sits inside <del>:
@@ -159,13 +169,13 @@ class LitonPublicationExtractor(BaseBookExtractor):
         return 0
 
     def get_description(self) -> str:
-
         # Short description (sidebar summary)
         description = self.soup.find("div", {"class": "product-details-initial-text"})
         if description:
             text = description.get_text(strip=True)
             if text:
                 return text
+        return ""
 
 
 
@@ -223,11 +233,18 @@ class LitonPublicationExtractor(BaseBookExtractor):
         for li in list_items:
             # Split text by ':' to separate label from value
             text = li.get_text(separator="|", strip=True)
-            if ":" in text:
-                parts = text.split(":")
-                key = parts[0].replace("|", "").strip()
-                value = parts[1].replace("|", "").strip()
-                book_data[key] = value
+            if ":" not in text:
+                continue
+            key, _, value = text.partition(":")
+            key = key.replace("|", "").strip().lower()
+            value = value.replace("|", "").strip()
+            # _map_spec() normalizes the raw label (e.g. "লেখক" / "Author" /
+            # "writer") into a canonical key ('author', 'publisher', etc.) -
+            # this was defined but never actually called before, so
+            # book_data ended up keyed by whatever raw label text the
+            # page happened to use, which litonpublication_products()
+            # could never reliably look up.
+            self._map_spec(book_data, key, value)
 
         return book_data
 

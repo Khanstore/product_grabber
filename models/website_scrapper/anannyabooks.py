@@ -47,12 +47,12 @@ class importProductFromAnannyaBooks(models.TransientModel):
             self.image_url    = extractor.get_image_url()
 
             specs = extractor.get_specifications()
-            self.authors    = specs.get('লেখক', '')
-            self.isbn       = specs.get('আইএসবিএন', '')
-            self.publishers = specs.get('প্রকাশনী', '')
-            self.pages      = specs.get('পৃষ্ঠা', '')
-            self.editions   = specs.get('সংস্করণ', '')
-            self.language   = specs.get('ভাষা', '')
+            self.authors    = specs.get('author', '')
+            self.isbn       = specs.get('isbn', '')
+            self.publishers = specs.get('publisher', '')
+            self.pages      = specs.get('pages', '')
+            self.editions   = specs.get('edition', '')
+            self.language   = specs.get('language', '')
             self.country    = specs.get('country', '')
 
             logging.info(f"✓ Successfully scraped: {self.product_name}")
@@ -108,13 +108,6 @@ class AnannyaBooksExtractor(BaseBookExtractor):
         price_div = self.soup.find("div", {'class': "price-wrap product-details-price-wrap"})
         if price_div:
             amount = price_div.find("span", {"class": "current-price"})
-            if amount:
-                return self._parse_price(amount.get_text(strip=True))
-        return 0.0
-    def get_authors(self) :
-        author_div =self.soup.find("div",{'class':"product-details-list"})
-        if author_div:
-            author = author_div.find("span", {"class": "previ-price"})
             if amount:
                 return self._parse_price(amount.get_text(strip=True))
         return 0.0
@@ -224,11 +217,18 @@ class AnannyaBooksExtractor(BaseBookExtractor):
         for li in list_items:
             # Split text by ':' to separate label from value
             text = li.get_text(separator="|", strip=True)
-            if ":" in text:
-                parts = text.split(":")
-                key = parts[0].replace("|", "").strip()
-                value = parts[1].replace("|", "").strip()
-                book_data[key] = value
+            if ":" not in text:
+                continue
+            key, _, value = text.partition(":")
+            key = key.replace("|", "").strip().lower()
+            value = value.replace("|", "").strip()
+            # _map_spec() normalizes the raw label into a canonical key
+            # (author/publisher/isbn/...) - this was defined but never
+            # actually called before, so book_data ended up keyed by
+            # whatever exact raw label text the page happened to use,
+            # which anannyabooks_products() could only match against by
+            # coincidence.
+            self._map_spec(book_data, key, value)
 
         return book_data
 

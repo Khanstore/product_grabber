@@ -431,6 +431,46 @@ class importProductFromWebsite(models.TransientModel):
 
         return auto_matched, suggestions, ambiguous_names
 
+    def action_create_author(self):
+        """Open Odoo's standard Contact form (target=new) to create a new
+        author, pre-filled with the proposed name if there is one. Uses
+        the standard res.partner form as-is - it already has Image,
+        Phone, Mobile and Email fields built in, so those can be filled
+        in by hand right here. After saving, search for the name in the
+        Authors field above to link them to this product - the wizard
+        doesn't auto-attach the newly created contact, since target=new
+        dialogs don't have a reliable way to report back into an
+        unrelated field on this record."""
+        self.ensure_one()
+        names = self._split_names(self.authors)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': "New Author",
+            'res_model': 'res.partner',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_is_writer': True,
+                'default_name': names[0] if names else False,
+            },
+        }
+
+    def action_create_publisher(self):
+        """Same as action_create_author, for publishers."""
+        self.ensure_one()
+        names = self._split_names(self.publishers)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': "New Publisher",
+            'res_model': 'res.partner',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_is_publisher': True,
+                'default_name': names[0] if names else False,
+            },
+        }
+
     def _suggest_category(self):
         """Suggest a product.category using only text already scraped from
         the source page (the proposed category/genre text where the site
@@ -699,6 +739,20 @@ class importProductFromWebsite(models.TransientModel):
         self.source_site_label = ALL_SUPPORTED_SITES.get(domain_name, host)
         result = getattr(self, '%s_products' % domain_name)()
 
+        if not result:
+            raise UserError(
+                "Fetching from %s failed - the site may be unreachable, or its page "
+                "structure may have changed. Check the Odoo server log for the exact "
+                "error (search for 'Failed to scrape')." % self.source_site_label
+            )
+        if self.product_name and not (self.authors or self.publishers or self.isbn):
+            self.review_notice = (
+                "The page title was fetched, but author/publisher/ISBN all came back "
+                "empty - this usually means the source site's page layout has changed "
+                "(or that detail is loaded by JavaScript this scraper can't run). "
+                "Worth double-checking these fields by hand before importing."
+            )
+
         # Auto-link proposed authors/publishers to existing partners where
         # unambiguous. When more than one similar match is found: in the
         # interactive case (populate_ambiguous=True) all candidates are
@@ -728,7 +782,7 @@ class importProductFromWebsite(models.TransientModel):
 
     def fetch_data(self):
         result = self._scrape_source_url()
-        warnings = []
+        warnings = [self.review_notice] if self.review_notice else []
 
         duplicates = self.duplicate_product_ids
         if len(duplicates) == 1:

@@ -30,7 +30,7 @@ class ImportProductFromGuardianpubs(models.TransientModel):
             driver.get(url)
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             elem = soup.find("div", {"class": "description"})
-            self.ecommerce_description = elem.text() if elem else ''
+            self.ecommerce_description = elem.get_text(strip=True) if elem else ''
 
 
             description_button = driver.find_element(By.XPATH, "//button[contains(text(), 'বিবরণ')]")
@@ -56,11 +56,9 @@ class ImportProductFromGuardianpubs(models.TransientModel):
             self.pages      = extractor.get_pages()
             self.editions      = extractor.get_editions()
             self.publication_date      = extractor.get_publication_date()
-
-            # specs = extractor.get_specifications()
-            # self.language   = specs.get('language', '')
-            # self.country    = specs.get('country', '')
-            # self.weight     = specs.get('weight', 0.0)
+            self.language              = extractor.get_language()
+            self.country               = extractor.get_country()
+            self.weight                = extractor.get_weight()
 
             _logger.info(f"✓ Successfully scraped from Guardianpubs: {self.product_name}")
             return True
@@ -121,50 +119,59 @@ class GuardianpubsExtractor(BaseBookExtractor):
 
     def get_title(self) -> str:
         """<h1 itemprop="name" class="h2">…</h1>"""
-        elem = self.soup.find("div",{"class":"product-title"}).find("h3")
-        return elem.contents[0].strip() if elem else "Unknown Product"
+        container = self.soup.find("div", {"class": "product-title"})
+        elem = container.find("h3") if container else None
+        return elem.contents[0].strip() if elem and elem.contents else "Unknown Product"
 
     def get_current_price(self) -> float:
         """Discounted / selling price."""
-        elem = self.soup.find("div",{"class":"product-price"}).find("h3")
+        container = self.soup.find("div", {"class": "product-price"})
+        elem = container.find("h3") if container else None
         return self._parse_price(elem.text) if elem else 0.0
 
     def get_original_price(self) -> float:
         """MRP / original / cover price (before discount)."""
 
         return self.get_current_price()
-    def get_publisher(self) -> float:
-        elem=self.soup.find("th",string='Publisher')
-        if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
 
-    def get_isbn(self) -> float:
-        elem=self.soup.find("th",string='ISBN')
+    def _th_value(self, label):
+        """Find a <th>label</th> row and return its sibling <td>'s text -
+        safely handles a missing/malformed row (no matching <td>)
+        instead of crashing on None.text, which several of these
+        getters used to do."""
+        elem = self.soup.find("th", string=label)
         if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
+            td = elem.find_next_sibling("td")
+            if td:
+                return td.get_text(strip=True)
+        return ""
 
-    def get_authors(self) -> float:
-        elem=self.soup.find("th",string='Author')
-        if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
-    def get_pages(self) -> float:
-        elem=self.soup.find("th",string='Number of Pages')
-        if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
+    def get_publisher(self) -> str:
+        return self._th_value('Publisher')
+
+    def get_isbn(self) -> str:
+        return self._th_value('ISBN')
+
+    def get_authors(self) -> str:
+        return self._th_value('Author')
+
+    def get_pages(self) -> str:
+        return self._th_value('Number of Pages')
+
     def get_editions(self) -> str:
-        elem=self.soup.find("th",string='Edition')
-        if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
+        return self._th_value('Edition')
+
     def get_publication_date(self) -> str:
-        elem=self.soup.find("th",string='Publish')
-        if elem:
-            return(elem.find_next_sibling("td").text.strip())
-        else:return ""
+        return self._th_value('Publish')
+
+    def get_language(self) -> str:
+        return self._th_value('Language')
+
+    def get_country(self) -> str:
+        return self._th_value('Country')
+
+    def get_weight(self) -> float:
+        return self._parse_price(self._th_value('Weight'))
 
     def get_stock_quantity(self) -> int:
         """

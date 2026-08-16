@@ -48,8 +48,8 @@ class ImportProductFromRokomari(models.TransientModel):
             specs = extractor.get_specifications()
             # self.product_name = specs.get('title', 'Unknown Product')
             self.isbn = specs.get('isbn', '')
-            self.authors = specs.get('author', '')
-            self.publishers = specs.get('publisher', '')
+            self.authors = extractor.get_author() or specs.get('author', '')
+            self.publishers = extractor.get_publisher() or specs.get('publisher', '')
             self.pages = specs.get('pages', '')
             self.editions = specs.get('edition', '')
             self.language = specs.get('language', '')
@@ -162,6 +162,14 @@ class RokomariExtractor(BaseBookExtractor):
         return og_image.get("content") if og_image else None
 
     def get_specifications(self):
+        # Table-based extraction - the original approach. Kept as a
+        # fallback: real usage showed this table sometimes missing from
+        # what a plain (non-JS-executing) HTTP request receives, likely
+        # because Rokomari's frontend is being migrated to a
+        # JS-rendered architecture (confirmed elsewhere: their search
+        # now runs on a separate next.rokomari.io subdomain) - some
+        # page sections may only populate after client-side JavaScript
+        # runs, which this scraper never executes.
         specs = {}
         for row in self.soup.select("table tr"):
             cells = row.find_all("td")
@@ -180,4 +188,33 @@ class RokomariExtractor(BaseBookExtractor):
                     match = re.search(r'[\d.]+', val)
                     specs['weight'] = float(match.group()) if match else 0.0
         return specs
+
+    def get_publisher(self):
+        """Prefer the structured product:brand meta tag - confirmed to
+        hold the publisher name on a real product page, and (like other
+        meta tags) part of the initial server-rendered HTML regardless
+        of whether the specs table itself is present."""
+        meta = self.soup.find("meta", property="product:brand")
+        if meta and meta.get("content"):
+            return meta["content"].strip()
+        return ''
+
+    def get_author(self):
+        """The author byline is a link matching /book/author/<id> with
+        NO slug after the id. Confirmed against a real page: Rokomari's
+        own 'trending searches' widget (which can appear earlier in the
+        DOM than the actual product content) links to author pages
+        WITH a slug (e.g. /book/author/1/humayun-ahmed), while the
+        current product's own byline, mini-cart preview, and footer
+        'Top Writer' links all use the no-slug form
+        (/book/author/47902). Filtering to the no-slug pattern and
+        taking the first match reliably lands on the current book's
+        author rather than an unrelated trending suggestion."""
+        for a in self.soup.select('a[href*="/book/author/"]'):
+            href = a.get('href', '')
+            if re.search(r'/book/author/\d+/?$', href):
+                text = a.get_text(strip=True)
+                if text:
+                    return text
+        return ''
 

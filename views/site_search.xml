@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="site_search_view_form" model="ir.ui.view">
+            <field name="name">product.grabber.site.search.form</field>
+            <field name="model">product.grabber.site.search</field>
+            <field name="arch" type="xml">
+                <form>
+                    <p>Search by title, author, or ISBN instead of pasting a URL directly.
+                       Currently supports live search on Rokomari only - for other sites,
+                       paste the product URL on the Import page as usual.</p>
+                    <group>
+                        <field name="site"/>
+                        <field name="query" placeholder="e.g. Paradoxical Sajid, or an author name, or an ISBN"/>
+                    </group>
+                    <button string="Search" type="object" name="action_search" class="btn-primary"/>
+                    <field name="result_ids" nolabel="1" colspan="2" invisible="not result_ids">
+                        <list create="false" delete="false" edit="false">
+                            <field name="title"/>
+                            <field name="url" widget="url"/>
+                            <button string="Use This" type="object" name="action_use_this_result" class="btn-link"/>
+                        </list>
+                    </field>
+                    <footer>
+                        <button string="Close" special="cancel" class="btn-secondary"/>
+                    </footer>
+                </form>
+            </field>
+        </record>
+
+        <record id="action_site_search" model="ir.actions.act_window">
+            <field name="name">Search &amp; Import</field>
+            <field name="res_model">product.grabber.site.search</field>
+            <field name="view_mode">form</field>
+            <field name="target">new</field>
+        </record>
+    </data>
+</odoo>

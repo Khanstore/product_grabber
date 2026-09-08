@@ -1,32 +1,163 @@
-from selenium import webdriver
-from selenium.webdriver.support.ui import WebDriverWait
-from bs4 import BeautifulSoup
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-import json,xmlrpc
+import json, xmlrpc.client
 import requests
-import re,logging
+import re, logging
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import difflib
 import urllib.parse
 from urllib.parse import urlparse
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 import base64
+from .phonetic_utils import phonetic_key, similarity
+from .site_search import ALL_SUPPORTED_SITES
+
+_logger = logging.getLogger(__name__)
+
+# Politeness delay (seconds) between consecutive requests when importing
+# many URLs in one go, so we don't hammer the source sites.
+BULK_IMPORT_DELAY = 1.5
+
+# Similarity thresholds (difflib ratio, 0-1) used for the local "smart
+# matching" of authors/publishers/categories/duplicate products. No
+# external AI service or API key is involved - these all compare scraped
+# text against records already in your own database.
+PARTNER_SIMILARITY_THRESHOLD = 0.60
+CATEGORY_SIMILARITY_THRESHOLD = 0.55
+PRODUCT_TITLE_SIMILARITY_THRESHOLD = 0.82
+# Looser bar used only for the informational "closest matching products"
+# list shown when nothing crosses the duplicate threshold above - this is
+# a "you might want to eyeball these" signal, not a block.
+PRODUCT_NEAREST_SIMILARITY_FLOOR = 0.40
+PRODUCT_NEAREST_MAX_RESULTS = 5
+
+
+def _phonetic_shingles(text, n=3, max_shingles=40):
+    """Break the phonetic-folded form of `text` into overlapping
+    n-character shingles (trigrams by default). Used to pre-filter DB
+    candidates via plain SQL ILIKE, without needing a real fuzzy-search
+    extension like PostgreSQL's pg_trgm.
+
+    Matching on a whole folded word (the earlier approach) misses cases
+    where the folding differs by even one internal character - e.g. a
+    Bengali-derived key like 'gardijan pablikesns' vs an English key like
+    'guardian publication' share no literal whole-word substring, even
+    though they're clearly the same name. Shingles fix this: they still
+    share plenty of 3-character fragments ('ard', 'rdi', 'bli', ...), so
+    a candidate search that OR's together ILIKE on each shingle finds the
+    record - the *actual* accept/reject decision is still made afterward
+    by the real similarity score, this step only makes sure a true match
+    doesn't get eliminated before it's ever scored."""
+    key = (phonetic_key(text) or '').replace(' ', '')
+    if not key:
+        return []
+    if len(key) <= n:
+        return [key]
+    shingles = []
+    for i in range(len(key) - n + 1):
+        s = key[i:i + n]
+        if s not in shingles:
+            shingles.append(s)
+    if len(shingles) > max_shingles:
+        # Sample evenly across the string rather than truncating, so a
+        # long title's ending isn't ignored entirely.
+        step = len(shingles) / max_shingles
+        shingles = [shingles[int(i * step)] for i in range(max_shingles)]
+    return shingles
 
 
 class ProductTemplate(models.Model):
-    _inherit='product.template'
+    _inherit = 'product.template'
 
-    publisher_link=fields.Char("publisher link")
+    publisher_link = fields.Char("publisher link")
+    phonetic_key = fields.Char(
+        compute='_compute_phonetic_key', store=True, index=True,
+        help="Auto-generated, folds English/Banglish/Bengali-script spelling "
+             "variants of the product name to a comparable form, so imports "
+             "can find this product even if it was catalogued under a "
+             "differently-scripted or spelled title."
+    )
+
+    @api.depends('name')
+    def _compute_phonetic_key(self):
+        for rec in self:
+            rec.phonetic_key = phonetic_key(rec.name or '')
+
+    def action_refresh_from_source(self):
+        """Re-scrape each product's original source page and refresh its
+        price/stock/description. Used by the manual button on the product
+        form and by the scheduled cron job. Products with no
+        'publisher_link' (i.e. not imported through this module) are
+        skipped."""
+        Wizard = self.env['import.product.from.website']
+        Log = self.env['import.product.log']
+        refreshed = self.browse()
+        for product in self:
+            if not product.publisher_link:
+                continue
+            wiz = Wizard.create({'source_url': product.publisher_link})
+            try:
+                wiz.fetch_data()
+            except Exception as e:
+                _logger.warning(
+                    "Refresh failed for %s (%s): %s",
+                    product.display_name, product.publisher_link, e
+                )
+                Log.create({
+                    'source_url': product.publisher_link,
+                    'status': 'error',
+                    'message': str(e),
+                    'product_id': product.id,
+                })
+                wiz.unlink()
+                continue
+
+            vals = {}
+            if wiz.price:
+                vals['list_price'] = wiz.price
+            if wiz.face_value:
+                vals['compare_list_price'] = wiz.face_value
+            if wiz.ecommerce_description:
+                vals['description_ecommerce'] = wiz.ecommerce_description
+            for fname, fval in wiz._optional_fields_map().items():
+                if fname in product._fields and fval:
+                    vals[fname] = fval
+
+            if vals:
+                product.write(vals)
+                refreshed |= product
+                Log.create({
+                    'source_url': product.publisher_link,
+                    'status': 'updated',
+                    'product_id': product.id,
+                    'message': "Refreshed via scheduled/manual re-scrape.",
+                })
+            wiz.unlink()
+        return refreshed
+
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    phonetic_key = fields.Char(
+        compute='_compute_phonetic_key', store=True, index=True,
+        help="Auto-generated, folds English/Banglish/Bengali-script spelling "
+             "variants of the name to a comparable form, so author/publisher "
+             "matching can find this partner regardless of which script or "
+             "spelling the source site used."
+    )
+
+    @api.depends('name')
+    def _compute_phonetic_key(self):
+        for rec in self:
+            rec.phonetic_key = phonetic_key(rec.name or '')
+
 
 class importProductFromWebsite(models.TransientModel):
     _name = 'import.product.from.website'
     _description = 'import product from website'
 
     # Define fields (if needed)
-    categ_id=fields.Many2one("product.category",string="category")
+    categ_id = fields.Many2one("product.category", string="category")
     author_ids = fields.Many2many(
         'res.partner',
         'import_product_author_rel',
@@ -42,8 +173,75 @@ class importProductFromWebsite(models.TransientModel):
         'partner_id',
         string="Publishers"
     )
-    authors=fields.Char("author (proposed)")
-    publishers=fields.Char("Publisher (proposed)")
+    authors = fields.Char("author (proposed)")
+    publishers = fields.Char("Publisher (proposed)")
+    force_duplicate = fields.Boolean(
+        string="Create Anyway (ignore duplicate warning)",
+        help="Tick this if you have checked the possible duplicate product(s) below and still want to import this as a new product."
+    )
+    duplicate_product_ids = fields.Many2many(
+        'product.template',
+        'import_product_duplicate_rel',
+        'wizard_id',
+        'product_tmpl_id',
+        string="Possible Duplicates",
+        readonly=True,
+    )
+    selected_duplicate_id = fields.Many2one(
+        'product.template',
+        string="Product to Update",
+        help="Auto-filled when there's exactly one confident duplicate. You can also "
+             "search and pick any product yourself - including one of the 'Closest "
+             "Matching Products' below, if you decide it's actually the same item - "
+             "then use 'Update Existing Product' instead of creating a new one."
+    )
+    nearest_product_ids = fields.Many2many(
+        'product.template',
+        'import_product_nearest_rel',
+        'wizard_id',
+        'product_tmpl_id',
+        string="Closest Matching Products",
+        readonly=True,
+        help="No confident duplicate was found, but these existing products have "
+             "the closest-matching names, in case one of them is actually the same "
+             "item under a different title."
+    )
+    author_suggestion_ids = fields.Many2many(
+        'res.partner',
+        'import_product_author_suggestion_rel',
+        'wizard_id',
+        'partner_id',
+        string="Similar Authors Found",
+        readonly=True,
+        help="Existing authors that look similar to the proposed name. None are "
+             "auto-added to Authors - check the box next to whichever one(s) are "
+             "actually correct, or leave it and create a new one if none of these "
+             "are actually the same person."
+    )
+    publisher_suggestion_ids = fields.Many2many(
+        'res.partner',
+        'import_product_publisher_suggestion_rel',
+        'wizard_id',
+        'partner_id',
+        string="Similar Publishers Found",
+        readonly=True,
+        help="Existing publishers that look similar to the proposed name. None are "
+             "auto-added to Publishers - check the box next to whichever one(s) are "
+             "actually correct, or leave it and create a new one if none of these "
+             "are actually the same publisher."
+    )
+    category_text = fields.Char("Category (proposed)")
+    category_suggestion_ids = fields.Many2many(
+        'product.category',
+        'import_product_category_suggestion_rel',
+        'wizard_id',
+        'categ_id',
+        string="Similar Categories Found",
+        readonly=True,
+        help="More than one existing category looks like a plausible fit, "
+             "so none was auto-selected. Pick the right one in the Category "
+             "field above."
+    )
     target_url = fields.Char(string="target URL")
     target_db = fields.Char(string="database")
     user_name = fields.Char(string="user name")
@@ -59,632 +257,851 @@ class importProductFromWebsite(models.TransientModel):
     pages = fields.Integer(string="Pages")
     editions = fields.Char(string="Editions")
     publication_date = fields.Char(string="Publication Date")
-    weight=fields.Float(string="weight")
-    language=fields.Char(string="Language")
-    country=fields.Char(string="Country")
+    weight = fields.Float(string="weight")
+    language = fields.Char(string="Language")
+    country = fields.Char(string="Country")
+
+    bulk_urls = fields.Text(
+        string="Bulk URLs (one per line)",
+        help="Paste one product URL per line from any supported site. Each will be "
+             "fetched, checked for duplicates (by ISBN, then source URL, then name) "
+             "and imported automatically."
+    )
+    bulk_import_summary = fields.Text(string="Last Bulk Import Result", readonly=True)
+    bulk_import_log_ids = fields.Many2many(
+        'import.product.log',
+        'import_product_bulk_log_rel',
+        'wizard_id',
+        'log_id',
+        string="This Run's Results",
+        readonly=True,
+    )
+    review_notice = fields.Text(
+        readonly=True,
+        help="Same content as the warning popup after Fetch Data, kept here so it "
+             "doesn't disappear once the popup is dismissed."
+    )
+    source_site_label = fields.Char(readonly=True, help="Which supported site this was fetched from.")
+
+    google_search_url = fields.Char(compute='_compute_google_search_url')
+
+    @api.depends('image_url')
+    def _compute_google_search_url(self):
+        base_url = "https://lens.google.com/uploadbyurl?url="
+        for record in self:
+            if record.image_url:
+                # Encodes the string to be URL friendly
+                encoded_image_url = urllib.parse.quote(record.image_url, safe='')
+                record.google_search_url = f"{base_url}{encoded_image_url}"
+            else:
+                record.google_search_url = False
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_names(text):
+        """Split a proposed 'authors'/'publishers' string like
+        'Humayun Ahmed, Muhammed Zafar Iqbal and Anisul Hoque'
+        into a clean list of individual names."""
+        if not text:
+            return []
+        # Normalise English "and" / Bengali "ও" used as a separator into a comma
+        normalized = re.sub(r'\s+(and|ও)\s+', ',', text, flags=re.IGNORECASE)
+        # Split on Latin comma, Bengali/Arabic comma variants
+        parts = re.split(r'[,،、]', normalized)
+        return [p.strip() for p in parts if p.strip()]
+
+    # A small, curated Bangla -> English dictionary for common book
+    # genre/category words. This deliberately does NOT try to cover
+    # author names, publisher names, or book titles - those are proper
+    # nouns and get *transliterated* (see phonetic_utils.phonetic_key),
+    # not translated. A genre word like 'উপন্যাস' and its English
+    # equivalent 'Novel' are simply different words tied together by
+    # meaning, so only a real translation lookup - not phonetics - can
+    # connect them, which is what this table is for.
+    _BN_EN_GENRE_TERMS = {
+        'উপন্যাস': 'novel', 'উপন্যাসিকা': 'novella',
+        'ছোটগল্প': 'short story', 'গল্প': 'story',
+        'কবিতা': 'poetry', 'কাব্য': 'poetry',
+        'ইতিহাস': 'history', 'জীবনী': 'biography',
+        'আত্মজীবনী': 'autobiography', 'স্মৃতিকথা': 'memoir',
+        'ভ্রমণ': 'travel', 'রম্য': 'humor',
+        'বিজ্ঞান': 'science', 'কল্পবিজ্ঞান': 'science fiction',
+        'ধর্ম': 'religion', 'ইসলামিক': 'islamic',
+        'রাজনীতি': 'politics', 'অর্থনীতি': 'economics',
+        'দর্শন': 'philosophy', 'মনোবিজ্ঞান': 'psychology',
+        'রহস্য': 'mystery', 'গোয়েন্দা': 'detective',
+        'থ্রিলার': 'thriller', 'ভৌতিক': 'horror',
+        'শিশুতোষ': "children's", 'কিশোর': 'young adult',
+        'কমিক্স': 'comics', 'অনুবাদ': 'translation',
+        'কৃষি': 'agriculture', 'স্বাস্থ্য': 'health',
+        'রান্না': 'cooking', 'নাটক': 'drama',
+        'উপন্যাস সমগ্র': 'novel collection', 'গণিত': 'mathematics',
+        'শিক্ষা': 'education', 'আইন': 'law',
+        'সাহিত্য': 'literature', 'প্রবন্ধ': 'essay',
+    }
+
+    def _translate_known_terms(self, text):
+        """Best-effort word/phrase substitution using the curated genre
+        dictionary above. Only meaningful for category/genre text - see
+        the note on _BN_EN_GENRE_TERMS for why this isn't applied to
+        names."""
+        if not text:
+            return text
+        translated = text
+        for bn, en in self._BN_EN_GENRE_TERMS.items():
+            if bn in translated:
+                translated = translated.replace(bn, en)
+        return translated
+
+    def _similarity(self, a, b):
+        """0-1 similarity score between two strings - see
+        phonetic_utils.similarity() for the actual logic, shared with the
+        duplicate-scan tool so both use exactly the same notion of
+        'similar'. No external service or API key - closed-set lookup
+        against your own catalog."""
+        return similarity(a, b)
+
+    def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False, interactive=True):
+        """Search existing res.partner records (authors/publishers) that
+        look similar to each proposed name, so we reuse them instead of
+        creating duplicate author/publisher partners.
+
+        Similarity is scored with difflib against a candidate pool
+        (pre-filtered in the DB by shared significant words, since we
+        can't run a similarity score across an entire partner table
+        without loading it).
+
+        interactive=True (the single-import case, a human is right
+        there to review): the real Authors/Publishers field is NEVER
+        auto-filled, no matter how confident a single match is - every
+        candidate found (one or several) is returned as a suggestion
+        for the user to explicitly pick via the Author/Publisher picker
+        + 'Add' button. This trades a click for certainty: nothing gets
+        attached without the person actually choosing it.
+
+        interactive=False (bulk import, no human in the loop): a
+        single unambiguous match is still auto-attached, since forcing
+        every bulk-imported book to need manual author review would
+        defeat the point of bulk import; multiple candidates are still
+        left for manual follow-up (flagged in the summary/log), same as
+        before.
+
+        Returns a tuple: (auto_matched, suggestions, ambiguous_names)
+        """
+        self.ensure_one()
+        Partner = self.env['res.partner']
+        auto_matched = Partner
+        suggestions = Partner
+        ambiguous_names = []
+
+        base_domain = []
+        if is_writer:
+            base_domain.append(('is_writer', '=', True))
+        if is_publisher:
+            base_domain.append(('is_publisher', '=', True))
+
+        for name in self._split_names(names_str):
+            shingles = _phonetic_shingles(name)
+            if not shingles:
+                continue
+            # Search the stored, indexed phonetic_key column via
+            # overlapping shingles - already folded to a
+            # script/spelling-independent form, and shingle-based so
+            # small internal folding differences (a dropped vowel, a
+            # slightly different consonant) don't cause a real match to
+            # be missed the way a whole-word substring search would.
+            shingle_domain = ['|'] * (len(shingles) - 1) + [('phonetic_key', 'ilike', s) for s in shingles]
+            candidates = self.env['res.partner'].search(base_domain + shingle_domain, limit=50)
+            if not candidates:
+                continue
+
+            scored = [(p, self._similarity(name, p.name)) for p in candidates]
+            above_threshold = [p for p, score in scored if score >= PARTNER_SIMILARITY_THRESHOLD]
+
+            if not above_threshold:
+                continue  # nothing to match, create new as before
+
+            if interactive:
+                suggestions |= Partner.browse([p.id for p in above_threshold])
+                if len(above_threshold) > 1:
+                    ambiguous_names.append(
+                        "%s (%d similar matches: %s)"
+                        % (name, len(above_threshold), ', '.join(p.name for p in above_threshold))
+                    )
+            elif len(above_threshold) == 1:
+                auto_matched |= above_threshold[0]
+            else:
+                suggestions |= Partner.browse([p.id for p in above_threshold])
+                ambiguous_names.append(
+                    "%s (%d similar matches: %s)"
+                    % (name, len(above_threshold), ', '.join(p.name for p in above_threshold))
+                )
+
+        return auto_matched, suggestions, ambiguous_names
+
+    def action_create_author(self):
+        """Open Odoo's standard Contact form (target=new) to create a new
+        author, pre-filled with the proposed name if there is one. Uses
+        the standard res.partner form as-is - it already has Image,
+        Phone, Mobile and Email fields built in, so those can be filled
+        in by hand right here. After saving, search for the name in the
+        Authors field above to link them to this product - the wizard
+        doesn't auto-attach the newly created contact, since target=new
+        dialogs don't have a reliable way to report back into an
+        unrelated field on this record."""
+        self.ensure_one()
+        names = self._split_names(self.authors)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': "New Author",
+            'res_model': 'res.partner',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_is_writer': True,
+                'default_name': names[0] if names else False,
+            },
+        }
+
+    def action_create_publisher(self):
+        """Same as action_create_author, for publishers."""
+        self.ensure_one()
+        names = self._split_names(self.publishers)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': "New Publisher",
+            'res_model': 'res.partner',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_is_publisher': True,
+                'default_name': names[0] if names else False,
+            },
+        }
+
+    def _suggest_category(self):
+        """Suggest a product.category using only text already scraped from
+        the source page (the proposed category/genre text where the site
+        provides one, plus the product title/description as a fallback)
+        matched against your own existing categories.
+
+        This is deliberately a local, closed-set similarity match rather
+        than a live web search: the goal is picking the right entry out
+        of *your own* category list, which a search engine has no way to
+        know about anyway - matching scraped text against your own
+        records locally is both simpler and more reliable for that.
+
+        Returns a tuple: (auto_category, suggestion_categories)
+        """
+        self.ensure_one()
+        Category = self.env['product.category']
+        combined_text = ' '.join(
+            t for t in [self.category_text, self.product_name] if t
+        ).lower()
+        if not combined_text:
+            return Category, Category
+
+        # Translate any recognised Bangla genre words in the scraped text
+        # to English, so an English category name (e.g. "Novel") can be
+        # matched even when the source page only gave a Bangla genre word
+        # (e.g. "উপন্যাস") - phonetics alone can't bridge that, since
+        # they're different words, not different spellings of one word.
+        translated_text = self._translate_known_terms(combined_text)
+
+        categories = Category.search([], limit=500)
+        scored = []
+        for cat in categories:
+            cname = (cat.name or '').strip()
+            if len(cname) < 3:
+                continue
+            cname_l = cname.lower()
+            if cname_l in combined_text or cname_l in translated_text:
+                # The category name literally appears in the scraped
+                # text (as given, or after translating known genre
+                # words) - treat as a strong match.
+                scored.append((cat, 1.0))
+            elif self.category_text:
+                translated_category_text = self._translate_known_terms(self.category_text.lower())
+                ratio = max(
+                    self._similarity(cname, self.category_text),
+                    self._similarity(cname, translated_category_text),
+                )
+                if ratio >= CATEGORY_SIMILARITY_THRESHOLD:
+                    scored.append((cat, ratio))
+
+        if not scored:
+            return Category, Category
+
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        best_score = scored[0][1]
+        # Anything within a small margin of the best score is treated as
+        # part of the same "top tier" of candidates.
+        top_tier = [cat for cat, score in scored if score >= best_score - 0.05]
+
+        if len(top_tier) == 1:
+            return top_tier[0], Category
+        return Category, Category.browse([cat.id for cat in top_tier[:5]])
+
+    def _find_duplicate_products(self):
+        """Search existing product.template records that look like the same
+        product, checked in order of reliability:
+
+        1. ISBN - the strongest signal, when the source page has one.
+        2. Source URL - the exact page was already imported before.
+        3. Product name - the only signal left for items with no ISBN
+           (common for older titles, pamphlets, non-book products, etc.),
+           so this is always tried, not just as a last resort when the
+           first two come up empty-handed for books that never had an
+           ISBN to begin with.
+        """
+        self.ensure_one()
+        Product = self.env['product.template']
+        matches = Product
+
+        if self.isbn and self.isbn.strip():
+            matches |= Product.search([('isbn', '=', self.isbn.strip())], limit=5)
+
+        if self.source_url and self.source_url.strip():
+            matches |= Product.search(
+                [('publisher_link', '=', self.source_url.strip())], limit=5
+            )
+
+        # Only fall back to name matching when nothing more reliable matched -
+        # a name match alone is the weakest signal (titles can collide) so we
+        # don't want it piling on top of a confident ISBN/URL match, but we
+        # do want it to run for the (common, for books) case where there's
+        # simply no ISBN and no prior import of this exact URL to check.
+        if not matches and self.product_name:
+            matches |= Product.search(
+                [('name', '=ilike', self.product_name.strip())], limit=5
+            )
+
+        # Still nothing? Try a fuzzy title match (catches near-duplicates -
+        # typos, "Vol. 1" vs "Volume 1", punctuation differences - that an
+        # exact/ilike match would miss). Uses a high similarity threshold
+        # since a false-positive "duplicate" here would block a real import.
+        if not matches and self.product_name:
+            candidates = self._search_products_by_words(self.product_name, limit=30)
+            fuzzy_matches = [
+                p for p in candidates
+                if self._similarity(self.product_name, p.name) >= PRODUCT_TITLE_SIMILARITY_THRESHOLD
+            ]
+            if fuzzy_matches:
+                matches |= Product.browse([p.id for p in fuzzy_matches])
+
+        return matches
+
+    def _search_products_by_words(self, name, limit=50):
+        """Pre-filter product.template using the stored, indexed
+        phonetic_key column via overlapping shingles (see
+        _phonetic_shingles) - finds candidates regardless of whether the
+        scraped title and the catalog entry are in Bengali script,
+        Banglish, or English, and survives small transliteration/folding
+        differences that a whole-word substring search would miss."""
+        shingles = _phonetic_shingles(name)
+        if not shingles:
+            return self.env['product.template']
+        shingle_domain = ['|'] * (len(shingles) - 1) + [('phonetic_key', 'ilike', s) for s in shingles]
+        return self.env['product.template'].search(shingle_domain, limit=limit)
+
+    def _find_nearest_products(self):
+        """When no confident duplicate was found, surface the
+        closest-matching existing products by title similarity anyway -
+        purely informational, doesn't block anything - so a human can
+        glance and catch a same-book-different-title case the duplicate
+        check's higher bar missed."""
+        self.ensure_one()
+        Product = self.env['product.template']
+        if not self.product_name:
+            return Product
+
+        candidates = self._search_products_by_words(self.product_name, limit=50)
+        scored = [
+            (p, self._similarity(self.product_name, p.name)) for p in candidates
+        ]
+        scored = [pair for pair in scored if pair[1] >= PRODUCT_NEAREST_SIMILARITY_FLOOR]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        top = scored[:PRODUCT_NEAREST_MAX_RESULTS]
+        return Product.browse([p.id for p, score in top])
+
+    def _optional_fields_map(self):
+        """Fields that were scraped but aren't guaranteed to exist on
+        product.template (they're defined by the book_shop module this
+        addon depends on). Callers check field existence before writing."""
+        self.ensure_one()
+        return {
+            'stock_qty': self.stock_qty,
+            'editions': self.editions,
+            'language': self.language,
+            'country': self.country,
+        }
+
+    def _download_image_b64(self, url):
+        """Download an image and return it base64-encoded, or False if it
+        can't be fetched - never raises, since a missing product image
+        shouldn't stop the rest of the import."""
+        if not url:
+            return False
+        try:
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            return base64.b64encode(response.content).decode("utf-8")
+        except Exception as e:
+            _logger.warning("Could not download image from %s: %s", url, e)
+            return False
+
+    # ------------------------------------------------------------------
+    # Remote (xmlrpc) product creation
+    # ------------------------------------------------------------------
 
     def create_remote_product(self):
-        url = self.target_url  # Replace with your Odoo instance URL
-        db = self.target_db # Replace with your Odoo database name
-        username = self.user_name  # Replace with your Odoo username
-        password = self.password  # Replace with your Odoo password
+        self.ensure_one()
+        if not (self.target_url and self.target_db and self.user_name and self.password):
+            raise UserError(
+                "Please fill in the target URL, database, user name and password "
+                "before creating a remote product."
+            )
 
-        # Establish connection
-        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
-        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        url = self.target_url.rstrip('/')
+        db = self.target_db
+        username = self.user_name
+        password = self.password
 
-        # Authenticate
-        uid = common.authenticate(db, username, password, {})
-        response = requests.get(self.image_url)
-        if response.status_code == 200:
-            encoded_image = base64.b64encode(response.content).decode("utf-8")
-            print(encoded_image[:200])  # print first 200 chars only
-        else:
-            print("Failed to download image:", response.status_code)
-        if uid:
-            print(f"Authenticated successfully with UID: {uid}")
+        try:
+            common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+            uid = common.authenticate(db, username, password, {})
+        except Exception as e:
+            raise UserError(f"Could not connect to {url}: {e}")
 
-            # Define product fields
-            product_fields = {
-                'name': self.product_name,
-                'list_price': self.face_value,
-                'standard_price': self.price,
-                'type': 'consu',  # 'product' for storable, 'service' for service, 'consu' for consumable
-                'is_published': True,
-                'image_1920': encoded_image,
-                'description_ecommerce': self.ecommerce_description,
-                # 'default_code': 'RPCPROD001',
-                # 'categ_id': self.categ_id,  # Replace with an existing product category ID
-                # Add other relevant fields as needed
-            }
+        if not uid:
+            raise UserError(
+                "Authentication failed - please check the target URL, database, "
+                "user name and password."
+            )
 
-            try:
-                # Create the product template
-                product_template_id = models.execute_kw(
-                    db, uid, password,
-                    'product.template', 'create',
-                    [product_fields]
-                )
-                print(f"Product template created with ID: {product_template_id}")
+        models_proxy = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        encoded_image = self._download_image_b64(self.image_url)
 
-                # Example of creating a product variant (if applicable)
-                # This often involves creating attribute lines on the product template first
-                # and then Odoo automatically generates variants or you can create them explicitly.
-                # For a simple product without variants, 'product.template' is sufficient.
+        product_fields = {
+            'name': self.product_name,
+            'list_price': self.price,
+            'is_published': True,
+            'description_ecommerce': self.ecommerce_description,
+        }
+        if encoded_image:
+            product_fields['image_1920'] = encoded_image
 
-            except xmlrpc.client.Fault as e:
-                print(f"Error creating product: {e}")
+        try:
+            product_template_id = models_proxy.execute_kw(
+                db, uid, password,
+                'product.template', 'create',
+                [product_fields]
+            )
+        except xmlrpc.client.Fault as e:
+            raise UserError(f"Error creating remote product: {e.faultString}")
 
-        else:
-            print("Authentication failed.")
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': "Remote product created",
+                'message': f"Product '{self.product_name}' was created on {url} "
+                           f"(ID {product_template_id}).",
+                'type': 'success',
+                'sticky': False,
+            },
+        }
 
+    # ------------------------------------------------------------------
+    # Fetch / scrape
+    # ------------------------------------------------------------------
 
+    def _scrape_source_url(self, interactive=True):
+        """Detect which site self.source_url belongs to and run the
+        matching *_products() scraper method, populating the fields on
+        this record. Shared by the single-URL 'Fetch Data' button
+        (interactive=True) and the bulk-import loop
+        (interactive=False, since there's no one to review a pick-list
+        of author/publisher candidates mid-loop)."""
+        self.ensure_one()
+        url = urlparse(self.source_url)
+        host = url.hostname or ''
+        domain_part = host.split('.')
+        domain_name = None
+        for i, part in enumerate(domain_part):
+            if part == 'com':
+                domain_name = domain_part[i - 1]
 
-    def fetch_data(self):
-        url= urlparse(self.source_url)
-        host= url.hostname
-        domain_part=host.split('.')
-        i=0
-        for part in domain_part:
-            if domain_part[i]=='com':
-                domain_name=domain_part[i-1]
-            i=i+1
-
-        if hasattr(self, '%s_products' % domain_name):
-            self.publisher_ids=False
-            self.author_ids=False
-            return getattr(self, '%s_products' % domain_name)()
-        else :
+        if not domain_name or not hasattr(self, '%s_products' % domain_name):
             raise UserError(f"Cannot import product data from {host}")
 
+        self.publisher_ids = False
+        self.author_ids = False
+        self.author_suggestion_ids = False
+        self.publisher_suggestion_ids = False
+        self.category_suggestion_ids = False
+        self.duplicate_product_ids = False
+        self.nearest_product_ids = False
+        self.force_duplicate = False
+        self.review_notice = False
+        self.source_site_label = ALL_SUPPORTED_SITES.get(domain_name, host)
+        result = getattr(self, '%s_products' % domain_name)()
 
+        if not result:
+            raise UserError(
+                "Fetching from %s failed - the site may be unreachable, or its page "
+                "structure may have changed. Check the Odoo server log for the exact "
+                "error (search for 'Failed to scrape')." % self.source_site_label
+            )
+        if self.product_name and not (self.authors or self.publishers or self.isbn):
+            self.review_notice = (
+                "The page title was fetched, but author/publisher/ISBN all came back "
+                "empty - this usually means the source site's page layout has changed "
+                "(or that detail is loaded by JavaScript this scraper can't run). "
+                "Worth double-checking these fields by hand before importing."
+            )
 
-    # def guardianpubs_products(self):
-    #     url = self.source_url
-    #     driver = webdriver.Chrome()  # or webdriver.Firefox()
-    #     driver.get(url)
-    #     wait = WebDriverWait(driver, 10)
-    #     time.sleep(3)  # wait for Angular to load content
-    #     soup = BeautifulSoup(driver.page_source, "html.parser")
-    #     stock_div = soup.find("div", class_="stock")
-    #
-    #     if stock_div:
-    #         stock_text = stock_div.get_text(strip=True)
-    #         self.stock_qty=int(re.findall(r'\d+', stock_text) [0])
-    #     name_div = soup.find("div", class_="product-title")
-    #     if name_div:
-    #         self.product_name=name_div.get_text(strip=True)
-    #     price_div = soup.find("div", class_="product-price")
-    #     if price_div:
-    #         price_text = price_div.get_text(strip=True)
-    #         # Mapping Bengali digits to English
-    #         bangla_to_english = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
-    #
-    #         # Find all Bengali numbers
-    #         matches = re.findall(r"[০-৯]+", price_text)
-    #
-    #         # Convert to English + int
-    #         prices = [int(m.translate(bangla_to_english)) for m in matches]
-    #
-    #         self.face_value=prices[0]
-    #         if len (prices) > 1:
-    #             self.price=prices[1]
-    #         else:
-    #             self.price=prices[0]
-    #
-    #
-    #     description_div = soup.find("div", class_="description")
-    #     if description_div:
-    #         self.ecommerce_description=description_div.get_text(strip=True)
-    #     img_tag = soup.select_one("div.product-image-box img")
-    #
-    #     if img_tag and img_tag.has_attr("src"):
-    #         self.image_url = img_tag["src"]
-    #
-    #     desc_button = wait.until(EC.presence_of_element_located((By.XPATH, '//button[contains(text(), "বিবরণ")]')))
-    #     driver.execute_script("arguments[0].click();", desc_button)
-    #
-    #     time.sleep(2)  # allow Angular to load content
-    #
-    #     soup = BeautifulSoup(driver.page_source, "html.parser")
-    #
-    #     isbn_td = None
-    #     for row in soup.select("div.specification table tr"):
-    #         th = row.find("th")
-    #         td = row.find("td")
-    #         if th and "ISBN" in th.get_text(strip=True):
-    #             self.isbn = td.get_text(strip=True)
-    #         if th and "Publish" in th.get_text(strip=True):
-    #             self.publication_date = td.get_text(strip=True)
-    #         if th and "Publisher" in th.get_text(strip=True):
-    #             self.publishers = td.get_text(strip=True)
-    #         if th and "Number of Pages" in th.get_text(strip=True):
-    #             self.pages = td.get_text(strip=True)
-    #
-    #         if th and "Edition" in th.get_text(strip=True):
-    #             self.editions = td.get_text(strip=True)
-    #
-    #         if th and "Title" in th.get_text(strip=True):
-    #             self.product_name = td.get_text(strip=True)
-    #     #set authors
-    #     for p in soup.find_all("p"):
-    #         if "লেখক" in p.get_text():
-    #             writer_name = p.find("a").get_text(strip=True)
-    #             self.authors=writer_name
-    #             break
-    #
-    #
-    #
-    #     driver.quit()
+        # Interactive (single-import): Authors/Publishers stay blank no
+        # matter how confident a match is - every candidate found shows
+        # up in the 'Similar ... Found' suggestion list instead, and the
+        # user explicitly picks (and clicks Add) to attach one. Bulk
+        # import keeps auto-attaching an unambiguous single match, since
+        # there's no one to click Add for every book in a large run.
+        self.author_ids, self.author_suggestion_ids, _author_ambiguous = \
+            self._find_matching_partners(self.authors, is_writer=True, interactive=interactive)
+        self.publisher_ids, self.publisher_suggestion_ids, _publisher_ambiguous = \
+            self._find_matching_partners(self.publishers, is_publisher=True, interactive=interactive)
 
+        # Same idea for category: only auto-fill it if the user hasn't
+        # already picked one themselves (e.g. re-fetching after a manual
+        # override), and only overwrite a category we ourselves suggested
+        # on a previous fetch.
+        auto_category, self.category_suggestion_ids = self._suggest_category()
+        if auto_category and not self.categ_id:
+            self.categ_id = auto_category
 
-    def khoshrozltd_products(self):
-        url = self.source_url
-        driver = webdriver.Chrome()  # or webdriver.Firefox()
-        driver.get(url)
-        wait = WebDriverWait(driver, 10)
-        time.sleep(3)  # wait for Angular to load content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        stock_div = soup.find("span", id="available-quantity")
+        self.duplicate_product_ids = self._find_duplicate_products()
+        self.selected_duplicate_id = (
+            self.duplicate_product_ids[0] if len(self.duplicate_product_ids) == 1 else False
+        )
+        if not self.duplicate_product_ids:
+            self.nearest_product_ids = self._find_nearest_products()
+        return result
 
-        if stock_div:
-            stock_text = stock_div.get_text(strip=True)
-            self.stock_qty=int(stock_text)
-        name_div = soup.find("h1", class_="mb-2 fs-20 fw-600")
-        if name_div:
-            self.product_name=name_div.get_text(strip=True)
-        price_div = soup.find("div", class_="fs-16 opacity-60")
-        if price_div:
-            price_text = price_div.get_text(strip=True)
-            # Remove currency sign, commas, and text after slash
-            price = re.sub(r'[^\d.]', '', price_text)  # keep only digits and dot
-            if price:
-                self.face_value = price
-        price_div = soup.find("strong", class_="h4 fw-700 text-primary")
-        if price_div:
-            price_text = price_div.get_text(strip=True)
-            match = re.search(r"[\d.]+", price_text)
-            if match:
-                price = float(match.group())
-            self.price = price
+    def fetch_data(self):
+        result = self._scrape_source_url()
+        warnings = [self.review_notice] if self.review_notice else []
 
-        description_div = soup.find("div", class_="mw-100 text-left")
-        if description_div:
-            self.ecommerce_description=description_div.decode_contents() # decode_context() get the inner html
+        duplicates = self.duplicate_product_ids
+        if len(duplicates) == 1:
+            warnings.append(
+                "An identical product already exists: '%s'. Click 'Update Existing "
+                "Product' to edit it directly, or tick 'Create Anyway' if this is "
+                "genuinely a different product."
+                % duplicates.name
+            )
+        elif len(duplicates) > 1:
+            warnings.append(
+                "Multiple possible duplicates found: %s. Pick the correct one in "
+                "'Product to Update' below, then click 'Update Existing Product' - "
+                "or tick 'Create Anyway' if none of them are actually the same product."
+                % ', '.join(duplicates.mapped('name'))
+            )
 
-        img_tag = soup.find("img",role="presentation")
+        if self.author_suggestion_ids:
+            warnings.append(
+                "Found existing author(s) that look similar to the proposed name - "
+                "tick the checkbox next to the right one(s) in 'Similar Authors Found'."
+            )
+        if self.publisher_suggestion_ids:
+            warnings.append(
+                "Found existing publisher(s) that look similar to the proposed name - "
+                "tick the checkbox next to the right one(s) in 'Similar Publishers Found'."
+            )
+        if self.category_suggestion_ids:
+            warnings.append(
+                "Multiple existing categories look like a plausible fit - none were "
+                "auto-selected. Check 'Similar Categories Found' and pick the right "
+                "one in the Category field."
+            )
 
-        if img_tag and img_tag.has_attr("src"):
-            self.image_url = img_tag["src"]
+        if warnings:
+            self.review_notice = '\n\n'.join(warnings)
+            return {
+                'warning': {
+                    'title': "Please review before importing",
+                    'message': self.review_notice,
+                }
+            }
+        return result
 
-        desc_button = wait.until(EC.presence_of_element_located((By.XPATH, '//a[contains(text(), "Specification ")]')))
-        driver.execute_script("arguments[0].click();", desc_button)
+    # ------------------------------------------------------------------
+    # Create / update product
+    # ------------------------------------------------------------------
 
-        time.sleep(2)  # allow Angular to load content
+    def _build_product_vals(self):
+        self.ensure_one()
+        target_fields = self.env['product.template']._fields
+        vals = {
+            'name': self.product_name,
+            'list_price': self.price,
+            'compare_list_price': self.face_value,
+            'description_ecommerce': self.ecommerce_description,
+            'is_storable': True,
+            'publisher_link': self.source_url,
+            'weight': self.weight,
+            'categ_id': self.categ_id.id if self.categ_id else False,
+        }
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
+        if self.author_ids:
+            vals['author_ids'] = [(6, 0, self.author_ids.ids)]
+        if self.publisher_ids:
+            vals['publisher_ids'] = [(6, 0, self.publisher_ids.ids)]
 
-        isbn_td = None
-        for row in soup.select("#spec-table tr"):
-            cells = row.find_all("td")
-            print(cells[0].get_text(strip=True).lower())
-            if len(cells) == 2 and "Author" in cells[0].get_text(strip=True):
-                self.authors = cells[1].get_text(strip=True)
-            if len(cells) == 2 and "isbn" in cells[0].get_text(strip=True).lower():
-                self.isbn = cells[1].get_text(strip=True)
-            if len(cells) == 2 and "Number of Pages" in cells[0].get_text(strip=True):
-                self.pages = cells[1].get_text(strip=True)
+        if self.isbn:
+            vals['isbn'] = self.isbn
+        if self.publication_date:
+            vals['last_edition'] = self.publication_date
 
-            if len(cells) == 2 and "Last Edition" in cells[0].get_text(strip=True):
-                self.publication_date = cells[1].get_text(strip=True)
+        # Fields that are assumptions about what the book_shop module
+        # defines on product.template - only set them if they actually
+        # exist, so a schema that's missing one of these (like
+        # 'image_url_template', which turned out not to exist) doesn't
+        # block product creation entirely over a single missing field.
+        optional_vals = {'image_url_template': self.image_url, 'pages': self.pages}
+        optional_vals.update(self._optional_fields_map())
+        for fname, fval in optional_vals.items():
+            if fname in target_fields and fval:
+                vals[fname] = fval
 
-        #     if th and "Publish" in th.get_text(strip=True):
-        #         self.publication_date = td.get_text(strip=True)
-        #     if th and "Title" in th.get_text(strip=True):
-        #         self.product_name = td.get_text(strip=True)
-        #
+        image_b64 = self._download_image_b64(self.image_url)
+        if image_b64:
+            vals['image_1920'] = image_b64
 
+        return vals
 
+    def _create_product_record(self):
+        self.ensure_one()
+        product = self.env['product.template'].create(self._build_product_vals())
 
-        driver.quit()
+        # Create the Vendor entry in product.supplierinfo - only the first
+        # publisher, matching the original behaviour.
+        for publisher in self.publisher_ids:
+            self.env['product.supplierinfo'].create({
+                'product_tmpl_id': product.id,
+                'partner_id': publisher.id,
+                'price': self.price,
+                'currency_id': self.env.company.currency_id.id,
+            })
+            break
 
-
-
-    def sottayon_products(self):
-        url = self.source_url
-        driver = webdriver.Chrome()  # or webdriver.Firefox()
-        driver.get(url)
-        wait = WebDriverWait(driver, 10)
-        time.sleep(3)  # wait for Angular to load content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        stock_div = soup.find("span", id="available-quantity")
-
-        if stock_div:
-            stock_text = stock_div.get_text(strip=True)
-            self.stock_qty=int(stock_text)
-        name_div = soup.find("h1", class_="product_title")
-        if name_div:
-            self.product_name=name_div.get_text(strip=True)
-        del_price = soup.select_one("del .woocommerce-Price-amount bdi")
-        if del_price:
-            original_price = re.sub(r"[^\d.]", "", del_price.get_text())
-            self.face_value = float(original_price)
-
-        # Extract discounted price (inside <ins>)
-        ins_price = soup.select_one("ins .woocommerce-Price-amount bdi")
-        if ins_price:
-            discounted_price = re.sub(r"[^\d.]", "", ins_price.get_text())
-            self.price = float(discounted_price)
-
-
-
-        description_div = soup.find("div", class_="woocommerce-product-details__short-description")
-        if description_div:
-            self.ecommerce_description=description_div.decode_contents() # decode_context() get the inner html
-
-        img_tag = soup.find('img', class_='wp-post-image')
-        image_src = img_tag['src'] if img_tag else None
-
-        self.image_url = image_src
-        # # fields that is shown after pressing specification Button
-        # desc_button = wait.until(EC.presence_of_element_located((By.XPATH, '//button[contains(text(), "Specification")]')))
-        # driver.execute_script("arguments[0].click();", desc_button)
-        #
-        # time.sleep(2)  # allow Angular to load content
-        #
-        # soup = BeautifulSoup(driver.page_source, "html.parser")
-        #
-        # isbn_td = None
-        # for row in soup.select("table tr"):
-        #     cells = row.find_all("td")
-        #     if len(cells) == 2 and "isbn" in cells[0].get_text(strip=True).lower():
-        #         self.isbn = cells[1].get_text(strip=True)
-        #     if len(cells) == 2 and "Name" in cells[0].get_text(strip=True):
-        #         self.product_name = cells[1].get_text(strip=True)
-        #     if len(cells) == 2 and "Edition" in cells[0].get_text(strip=True):
-        #         self.publication_date = cells[1].get_text(strip=True)
-        #
-        #     if len(cells) == 2 and "Weight" in cells[0].get_text(strip=True):
-        #         weight_txt = cells[1].get_text(strip=True)
-        #         match = re.search(r"[\d.]+", weight_txt)
-        #         if match:
-        #             self.weight = float(match.group())
-        #
-        #
-        #     if len(cells) == 2 and "Author" in cells[0].get_text(strip=True):
-        #         self.authors = cells[1].get_text(strip=True)
-        #
-        #     if len(cells) == 2 and "Publisher" in cells[0].get_text(strip=True):
-        #         self.publishers = cells[1].get_text(strip=True)
-        #
-        #     if len(cells) == 2 and "No of Page" in cells[0].get_text(strip=True):
-        #         self.pages = cells[1].get_text(strip=True)
-
-
-
-
-
-
-        driver.quit()
-
-
-
-
-    def esquireelectronicsltd_products(self):
-        url = self.source_url
-        driver = webdriver.Chrome()  # or webdriver.Firefox()
-        driver.get(url)
-        wait = WebDriverWait(driver, 10)
-        time.sleep(3)  # wait for Angular to load content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        extractor = esquireelectronicsltdExtractor(soup)
-
-        # self.product_name = extractor.get_title()
-        self.face_value = extractor.get_original_price()
-        self.price = extractor.get_current_price()
-        self.stock_qty = extractor.get_stock_quantity()
-        self.ecommerce_description = extractor.get_description()
-        self.image_url = extractor.get_image_url()
-        self.product_name=extractor.get_title()
-
-        specs = extractor.get_specifications()
-        self.isbn = specs.get('isbn', '')
-        self.authors = specs.get('author', '')
-        self.publishers = specs.get('publisher', '')
-        self.pages = specs.get('pages', '')
-        self.editions = specs.get('edition', '')
-        self.language = specs.get('language', '')
-        self.country = specs.get('country', '')
-        self.weight = specs.get('weight', 0.0)
-
-        print(f"✓ Successfully scraped: {self.product_name}")
-        return True
-
-    def gadgetandgear_products(self):
-        url = self.source_url
-        driver = webdriver.Chrome()  # or webdriver.Firefox()
-        driver.get(url)
-        wait = WebDriverWait(driver, 10)
-        time.sleep(3)  # wait for Angular to load content
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        extractor = gadgetandgearExtractor(soup)
-
-        # self.product_name = extractor.get_title()
-        self.face_value = extractor.get_original_price()
-        self.price = extractor.get_current_price()
-        self.stock_qty = extractor.get_stock_quantity()
-        self.ecommerce_description = extractor.get_description()
-        self.image_url = extractor.get_image_url()
-        self.product_name=extractor.get_title()
-
-        specs = extractor.get_specifications()
-        self.isbn = specs.get('isbn', '')
-        self.authors = specs.get('author', '')
-        self.publishers = specs.get('publisher', '')
-        self.pages = specs.get('pages', '')
-        self.editions = specs.get('edition', '')
-        self.language = specs.get('language', '')
-        self.country = specs.get('country', '')
-        self.weight = specs.get('weight', 0.0)
-
-        print(f"✓ Successfully scraped: {self.product_name}")
-        return True
-
+        return product
 
     def create_product(self):
-        vals={}
-        if len(self.author_ids)>0:
-            vals['author_ids']= [(6, 0, self.author_ids.ids)]
+        self.ensure_one()
+        duplicates = self._find_duplicate_products()
+        if duplicates and not self.force_duplicate:
+            if len(duplicates) == 1:
+                raise UserError(
+                    "An identical product already exists: '%s'.\n\n"
+                    "Use 'Update Existing Product' to edit it directly, or tick "
+                    "'Create Anyway' if this is genuinely a different product."
+                    % duplicates.name
+                )
+            raise UserError(
+                "Multiple possible duplicates found: %s.\n\n"
+                "Pick the correct one in 'Product to Update' and use 'Update Existing "
+                "Product', or tick 'Create Anyway' if none of them are actually the "
+                "same product."
+                % ', '.join(duplicates.mapped('name'))
+            )
 
+        product = self._create_product_record()
+        self.env['import.product.log'].create({
+            'source_url': self.source_url,
+            'status': 'created',
+            'product_id': product.id,
+        })
 
-        if len(self.categ_id) > 0:
-            vals['categ_id']=self.categ_id.id
-        vals['description_ecommerce']=self.ecommerce_description
-        vals['image_url_template']=self.image_url
-        vals['is_storable']=True
-        if self.isbn:
-            vals['isbn']=self.isbn
-        if self.publication_date:
-            vals['last_edition']=self.publication_date
-        vals['list_price']=self.price
-        vals['compare_list_price']=self.face_value
-        vals['name']=self.product_name
-        vals['pages']=self.pages
-        vals['publisher_link']=self.source_url
-        if len(self.publisher_ids)>0:
-            vals['publisher_ids']= [(6, 0, self.publisher_ids.ids)]
-        vals['weight']= self.weight
-
-
-
-
-        product=self.env['product.template'].create(vals)
         return {
             'type': 'ir.actions.act_window',
             'res_model': 'product.template',
             'res_id': product.id,
             'view_mode': 'form',
-            'view_type': 'form',
-            'target': 'new',  # or 'new' for popup
+            'target': 'current',
             'context': self.env.context,
         }
 
-    def action_open_google_image_search(self):
+    def update_existing_product(self):
+        """Instead of creating a new product, refresh the fields on an
+        existing product - either the one the user explicitly picked in
+        'Product to Update' (required when more than one duplicate was
+        found), or the single unambiguous duplicate."""
         self.ensure_one()
-        query = self.name or ""
+        product = self.selected_duplicate_id
+        if not product:
+            duplicates = self._find_duplicate_products()
+            if not duplicates:
+                raise UserError(
+                    "No matching existing product found to update - use 'Import Product' "
+                    "to create a new one instead."
+                )
+            if len(duplicates) > 1:
+                raise UserError(
+                    "Multiple possible duplicates found: %s.\n\n"
+                    "Please pick the one you want to update in the 'Product to Update' "
+                    "field first."
+                    % ', '.join(duplicates.mapped('name'))
+                )
+            product = duplicates[0]
+
+        target_fields = self.env['product.template']._fields
+
+        vals = {}
+        if self.price:
+            vals['list_price'] = self.price
+        if self.face_value:
+            vals['compare_list_price'] = self.face_value
+        if self.ecommerce_description:
+            vals['description_ecommerce'] = self.ecommerce_description
+        if self.image_url:
+            if 'image_url_template' in target_fields:
+                vals['image_url_template'] = self.image_url
+            image_b64 = self._download_image_b64(self.image_url)
+            if image_b64:
+                vals['image_1920'] = image_b64
+        if self.pages and 'pages' in target_fields:
+            vals['pages'] = self.pages
+        if self.weight:
+            vals['weight'] = self.weight
+        if self.isbn:
+            vals['isbn'] = self.isbn
+        if self.publication_date:
+            vals['last_edition'] = self.publication_date
+        if self.author_ids:
+            vals['author_ids'] = [(4, pid) for pid in self.author_ids.ids]
+        if self.publisher_ids:
+            vals['publisher_ids'] = [(4, pid) for pid in self.publisher_ids.ids]
+
+        for fname, fval in self._optional_fields_map().items():
+            if fname in target_fields and fval:
+                vals[fname] = fval
+
+        if vals:
+            product.write(vals)
+
+        self.env['import.product.log'].create({
+            'source_url': self.source_url,
+            'status': 'updated',
+            'product_id': product.id,
+        })
+
         return {
-            'type': 'ir.actions.act_url',
-            'url': f"https://www.google.com/search?tbm=isch&q={query}",
-            'target': 'new',  # open in new tab
+            'type': 'ir.actions.act_window',
+            'res_model': 'product.template',
+            'res_id': product.id,
+            'view_mode': 'form',
+            'target': 'current',
+            'context': self.env.context,
         }
 
+    # ------------------------------------------------------------------
+    # Bulk import
+    # ------------------------------------------------------------------
 
+    def action_bulk_import(self):
+        self.ensure_one()
+        urls = [u.strip() for u in (self.bulk_urls or '').splitlines() if u.strip()]
+        if not urls:
+            raise UserError("Please paste at least one URL, one per line, in 'Bulk URLs'.")
 
+        Log = self.env['import.product.log']
+        created = duplicate = failed = 0
+        summary_lines = []
+        run_log_ids = []
 
+        for idx, url in enumerate(urls):
+            if idx:
+                # Be polite to the source sites between requests.
+                time.sleep(BULK_IMPORT_DELAY)
 
+            temp = self.create({
+                'source_url': url,
+                'categ_id': self.categ_id.id if self.categ_id else False,
+            })
+            try:
+                try:
+                    temp._scrape_source_url(interactive=False)
+                except UserError as e:
+                    raise
+                except Exception as e:
+                    raise UserError(str(e))
 
+                if not temp.product_name:
+                    raise UserError("Could not read product data from this page.")
 
-class gadgetandgearExtractor:
-    """Helper class to extract data from gadgetandgear product pages"""
+                duplicates = temp._find_duplicate_products()
+                if duplicates:
+                    duplicate += 1
+                    summary_lines.append(
+                        "SKIPPED (duplicate)  %s  ->  matches %s"
+                        % (url, ', '.join(duplicates.mapped('name')))
+                    )
+                    log = Log.create({
+                        'source_url': url,
+                        'status': 'duplicate',
+                        'message': "Matches: %s" % ', '.join(duplicates.mapped('name')),
+                        'product_id': duplicates[0].id,
+                    })
+                    run_log_ids.append(log.id)
+                    continue
 
-    def __init__(self, soup):
-        self.soup = soup
+                product = temp._create_product_record()
+                created += 1
+                note_parts = []
+                if temp.author_suggestion_ids or temp.publisher_suggestion_ids:
+                    note_parts.append("author/publisher")
+                if temp.category_suggestion_ids:
+                    note_parts.append("category")
+                if temp.nearest_product_ids:
+                    note_parts.append("possible near-duplicate by name")
+                note = ""
+                if note_parts:
+                    note = " (review %s - multiple similar matches found, none applied)" % ' & '.join(note_parts)
+                summary_lines.append("CREATED  %s  ->  %s%s" % (url, product.display_name, note))
+                log = Log.create({
+                    'source_url': url,
+                    'status': 'created',
+                    'product_id': product.id,
+                    'message': note.strip(" ()") or False,
+                })
+                run_log_ids.append(log.id)
 
-    def get_title(self):
-        title_elem=self.soup.select_one('h1.Top_productName__i6Zp2')
-        if title_elem:
-            return title_elem.text
+            except UserError as e:
+                failed += 1
+                summary_lines.append("FAILED  %s  ->  %s" % (url, e))
+                log = Log.create({'source_url': url, 'status': 'error', 'message': str(e)})
+                run_log_ids.append(log.id)
+            finally:
+                temp.unlink()
 
+        self.bulk_import_summary = (
+            "%d created, %d skipped as duplicates, %d failed.\n\n%s"
+            % (created, duplicate, failed, '\n'.join(summary_lines))
+        )
+        self.bulk_import_log_ids = [(6, 0, run_log_ids)]
 
-    def get_current_price(self):
-        price_elem = self.soup.select_one('div.product-price')
-        if price_elem:
-            return self._parse_price(price_elem.find('h3').text)
-        return 0
-
-    def get_original_price(self):
-        price_elem = self.soup.select_one('span.ProductCard_price__t9DLm')
-        if price_elem:
-            return self._parse_price(price_elem.text)
-        return 0
-
-    def get_stock_quantity(self):
-        stock_elem = self.soup.find("span", id="available-quantity")
-        if stock_elem:
-            stock_text = stock_elem.get_text(strip=True)
-            match = re.search(r'\d+', stock_text)
-            return int(match.group()) if match else 0
-        return 0  # safer default
-
-    def get_description(self):
-        desc_elem=self.soup.select_one('div.Top_attribute__uEqlP').find_previous_sibling()
-        return desc_elem.decode_contents().strip() if desc_elem else ""
-
-    def get_image_url(self):
-        image_url=self.soup.select_one('img.Top_image__3b3Bd')['src']
-        return image_url
-
-
-
-    def get_specifications(self):
-        specs = {}
-        for row in self.soup.select("table tr"):
-            cells = row.find_all("td")
-            if len(cells) >= 2:
-                key = cells[0].get_text(strip=True).lower()
-                value = cells[1].get_text(strip=True)
-
-                if "title" in key:
-                    specs['title'] = value
-                if "isbn" in key:
-                    specs['isbn'] = value
-                elif "author" in key or "লেখক" in key:
-                    specs['author'] = value
-                elif "publisher" in key or "প্রকাশক" in key:
-                    specs['publisher'] = value
-                elif "page" in key or "পৃষ্ঠা" in key:
-                    match = re.search(r'\d+', value)
-                    specs['pages'] = match.group() if match else value
-                elif "edition" in key or "সংস্করণ" in key:
-                    specs['edition'] = value
-                elif "language" in key or "ভাষা" in key:
-                    specs['language'] = value
-                elif "country" in key or "দেশ" in key:
-                    specs['country'] = value
-                elif "weight" in key:
-                    match = re.search(r'[\d.]+', value)
-                    specs['weight'] = float(match.group()) if match else 0.0
-        return specs
-
-    # --- helpers ---
-    def _extract_text(self, selectors, default=""):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem.get_text(strip=True)
-        return default
-
-    def _find_element(self, selectors):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem
-        return None
-
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        match = re.search(r'[\d,]+\.?\d*', price_text.replace('৳', '').replace('Tk', ''))
-        return float(match.group().replace(',', '')) if match else 0.0
-
-    def _normalize_url(self, url):
-        if not url:
-            return None
-        if url.startswith('//'):
-            return 'https:' + url
-        elif url.startswith('/'):
-            return 'https://www.rokomari.com' + url
-        return url
-
-class esquireelectronicsltdExtractor:
-    """Helper class to extract data from gadgetandgear product pages"""
-
-    def __init__(self, soup):
-        self.soup = soup
-
-    def get_title(self):
-        title_elem=self.soup.select_one('div.product-title')
-        if title_elem:
-            return title_elem.text
-
-
-    def get_current_price(self):
-        price_elem = self.soup.select_one('div.product-price').find('h3')
-        if price_elem:
-            return self._parse_price(price_elem.text)
-        return 0
-
-    def get_original_price(self):
-        price_elem = self.soup.select_one('div.product-price').find('del')
-        if price_elem:
-            return self._parse_price(price_elem.text)
-        return 0
-
-    def get_stock_quantity(self):
-        stock_elem = self.soup.find("span", id="available-quantity")
-        if stock_elem:
-            stock_text = stock_elem.get_text(strip=True)
-            match = re.search(r'\d+', stock_text)
-            return int(match.group()) if match else 0
-        return 0  # safer default
-
-    def get_description(self):
-        price_elem=self.soup.select_one('div.product-price')
-        desc_elem = price_elem.find_next('div', class_='note-section')
-        return desc_elem.decode_contents().strip() if desc_elem else ""
-
-    def get_image_url(self):
-        image_url=self.soup.select_one('div.product-img-area').find('img')['src']
-        return image_url
-
-
-
-    def get_specifications(self):
-        specs = {}
-        for row in self.soup.select("table tr"):
-            cells = row.find_all("td")
-            if len(cells) >= 2:
-                key = cells[0].get_text(strip=True).lower()
-                value = cells[1].get_text(strip=True)
-
-                if "title" in key:
-                    specs['title'] = value
-                if "isbn" in key:
-                    specs['isbn'] = value
-                elif "author" in key or "লেখক" in key:
-                    specs['author'] = value
-                elif "publisher" in key or "প্রকাশক" in key:
-                    specs['publisher'] = value
-                elif "page" in key or "পৃষ্ঠা" in key:
-                    match = re.search(r'\d+', value)
-                    specs['pages'] = match.group() if match else value
-                elif "edition" in key or "সংস্করণ" in key:
-                    specs['edition'] = value
-                elif "language" in key or "ভাষা" in key:
-                    specs['language'] = value
-                elif "country" in key or "দেশ" in key:
-                    specs['country'] = value
-                elif "weight" in key:
-                    match = re.search(r'[\d.]+', value)
-                    specs['weight'] = float(match.group()) if match else 0.0
-        return specs
-
-    # --- helpers ---
-    def _extract_text(self, selectors, default=""):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem.get_text(strip=True)
-        return default
-
-    def _find_element(self, selectors):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem
-        return None
-
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        match = re.search(r'[\d,]+\.?\d*', price_text.replace('৳', '').replace('Tk', ''))
-        return float(match.group().replace(',', '')) if match else 0.0
-
-    def _normalize_url(self, url):
-        if not url:
-            return None
-        if url.startswith('//'):
-            return 'https:' + url
-        elif url.startswith('/'):
-            return 'https://www.rokomari.com' + url
-        return url
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': "Bulk import finished",
+                'message': "%d created, %d skipped as duplicates, %d failed. "
+                           "See 'Last Bulk Import Result' for details." % (created, duplicate, failed),
+                'type': 'success' if not failed else 'warning',
+                'sticky': True,
+            },
+        }

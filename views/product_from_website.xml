@@ -6,44 +6,173 @@
             <field name="model">import.product.from.website</field>
             <field name="arch" type="xml">
                 <form>
-                    <group>
+                    <notebook>
+                        <page string="Single Import">
+                            <separator string="1. Paste the product URL and fetch its data"/>
+                            <group>
+                                <field name="source_url"/>
+                                <button string="Fetch Data" type="object" name="fetch_data" class="btn-primary"/>
+                            </group>
 
-                        <group>
-                            <field name="source_url"/>
-                            <field name="target_url"/>
-                            <field name="target_db"/>
-                            <field name="user_name"/>
-                            <field name="password"/>
-                            <button string="Fetch Data" type="object" name="fetch_data" class="btn-primary"/>
-                        </group>
+                            <div class="alert alert-warning" role="alert" invisible="not review_notice">
+                                <field name="review_notice" nolabel="1" readonly="1"/>
+                            </div>
 
-                    </group>
-                    <group>
-                        <group>
-                            <field name="product_name"/>
+                            <separator string="2. Review and import" invisible="not product_name"/>
+                            <div invisible="not product_name">
 
-                            <field name="authors"/>
-                            <field name="publishers"/>
-                            <field name="stock_qty"/>
-                            <field name="ecommerce_description"/>
-                            <field name="face_value"/>
-                            <field name="price"/>
-                            <field name="pages"/>
-                            <field name="weight"/>
-                            <field name="editions"/>
-                            <field name="isbn"/>
-                            <field name="publication_date"/>
+                                <div class="d-flex align-items-center gap-2 mb-2">
+                                    <span class="badge text-bg-secondary" invisible="not source_site_label">
+                                        <field name="source_site_label" nolabel="1" readonly="1"/>
+                                    </span>
+                                </div>
 
-                        </group>
-                        <group>
-                            <field name="categ_id"/>
-                            <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', 'True')]" context="{'default_is_writer':1}"/>
-                            <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', 'True')]" context="{'default_is_publisher':1}"/>
-                            <field name="image_url" widget="image_url"/>
-                        </group>
-                        <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
-                        <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-primary"/>
-                    </group>
+                                <div class="d-flex gap-3 mb-3">
+                                    <div class="product_grabber_cover_box">
+                                        <field name="image_url" widget="image_url" nolabel="1"/>
+                                    </div>
+                                    <div>
+                                        <field name="google_search_url"
+                                               widget="url"
+                                               text="Search on Google Images"
+                                               invisible="not google_search_url"/>
+                                        <field name="image_url"/>
+                                    </div>
+                                </div>
+
+                                <group>
+                                    <field name="product_name"/>
+                                    <field name="category_text"/>
+                                    <field name="editions"/>
+                                    <field name="isbn"/>
+                                    <field name="publication_date"/>
+                                </group>
+
+                                <group>
+                                    <group>
+                                        <field name="authors"/>
+                                    </group>
+                                    <group>
+                                        <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', True)]" context="{'default_is_writer':1}"/>
+                                        <button string="New Author" type="object" name="action_create_author"
+                                                class="btn-link" icon="fa-plus"/>
+                                    </group>
+                                </group>
+                                <div class="alert alert-info" role="alert" invisible="not author_suggestion_ids">
+                                    <strong>Similar Authors Found</strong> - check to add, uncheck to remove:
+                                    <field name="author_ids" nolabel="1" widget="many2many_checkboxes"
+                                           domain="[('id', 'in', author_suggestion_ids)]"/>
+                                </div>
+
+                                <group>
+                                    <group>
+                                        <field name="publishers"/>
+                                    </group>
+                                    <group>
+                                        <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', True)]" context="{'default_is_publisher':1}"/>
+                                        <button string="New Publisher" type="object" name="action_create_publisher"
+                                                class="btn-link" icon="fa-plus"/>
+                                    </group>
+                                </group>
+                                <div class="alert alert-info" role="alert" invisible="not publisher_suggestion_ids">
+                                    <strong>Similar Publishers Found</strong> - check to add, uncheck to remove:
+                                    <field name="publisher_ids" nolabel="1" widget="many2many_checkboxes"
+                                           domain="[('id', 'in', publisher_suggestion_ids)]"/>
+                                </div>
+
+                                <div class="d-flex gap-5 my-3">
+                                    <div>
+                                        <div class="text-muted" style="font-size:11px;">Sale price</div>
+                                        <field name="price" nolabel="1"/>
+                                    </div>
+                                    <div>
+                                        <div class="text-muted" style="font-size:11px;">Printed price</div>
+                                        <field name="face_value" nolabel="1"/>
+                                    </div>
+                                    <div>
+                                        <div class="text-muted" style="font-size:11px;">Pages</div>
+                                        <field name="pages" nolabel="1"/>
+                                    </div>
+                                    <div>
+                                        <div class="text-muted" style="font-size:11px;">Weight</div>
+                                        <field name="weight" nolabel="1"/>
+                                    </div>
+                                    <div>
+                                        <div class="text-muted" style="font-size:11px;">Stock qty</div>
+                                        <field name="stock_qty" nolabel="1"/>
+                                    </div>
+                                </div>
+
+                                <group>
+                                    <group>
+                                        <field name="categ_id"/>
+                                        <field name="category_suggestion_ids" widget="many2many_tags" readonly="1"
+                                               invisible="not category_suggestion_ids"/>
+                                    </group>
+                                    <group>
+                                        <field name="ecommerce_description"/>
+                                    </group>
+                                </group>
+
+                                <div class="alert alert-warning" role="alert" invisible="not duplicate_product_ids">
+                                    <strong>Possible duplicate found</strong>
+                                    <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
+                                </div>
+
+                                <div class="alert alert-info" role="alert"
+                                     invisible="not nearest_product_ids or duplicate_product_ids">
+                                    <strong>Worth a look - no confident duplicate, but these are close by name</strong>
+                                    <field name="nearest_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
+                                </div>
+
+                                <div class="d-flex align-items-center gap-3 mb-2"
+                                     invisible="not duplicate_product_ids and not nearest_product_ids">
+                                    <field name="selected_duplicate_id" nolabel="1"
+                                           placeholder="Pick which product to update instead"
+                                           style="min-width:260px;"/>
+                                    <button string="Update Existing Product" type="object" name="update_existing_product"
+                                            class="btn-secondary" invisible="not selected_duplicate_id"/>
+                                    <field name="force_duplicate" invisible="not duplicate_product_ids"/>
+                                </div>
+
+                                <button string="Import Product" type="object" name="create_product" class="btn-primary mt-2"/>
+                            </div>
+                        </page>
+
+                        <page string="Bulk Import">
+                            <group>
+                                <field name="bulk_urls" nolabel="1" placeholder="https://www.rokomari.com/book/...
+https://www.prothoma.com/product/...
+https://www.wafilife.com/...
+
+One product URL per line, from any supported site."/>
+                            </group>
+                            <button string="Run Bulk Import" type="object" name="action_bulk_import" class="btn-primary"/>
+                            <field name="bulk_import_log_ids" nolabel="1" colspan="2" invisible="not bulk_import_log_ids">
+                                <list create="false" delete="false" edit="false">
+                                    <field name="status" decoration-success="status == 'created'"
+                                           decoration-info="status == 'updated'"
+                                           decoration-muted="status == 'duplicate'"
+                                           decoration-danger="status == 'error'"/>
+                                    <field name="source_url"/>
+                                    <field name="product_id"/>
+                                    <field name="message"/>
+                                </list>
+                            </field>
+                        </page>
+
+                        <page string="Remote Import (Advanced)">
+                            <p class="text-muted">Create a copy of this product on a different Odoo database over
+                                xmlrpc, instead of (or in addition to) importing it locally.</p>
+                            <group>
+                                <field name="target_url"/>
+                                <field name="target_db"/>
+                                <field name="user_name"/>
+                                <field name="password" password="True"/>
+                            </group>
+                            <button string="Create Remote Product" type="object" name="create_remote_product" class="btn-secondary"/>
+                        </page>
+                    </notebook>
                 </form>
             </field>
         </record>

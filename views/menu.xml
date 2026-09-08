@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="product_grabber_root"
+              name="Grabb Products from websites"
+              sequence="85"
+              web_icon="product_grabber,static/description/icon.png"
+              action="action_product_grabber_dashboard_home"
+              groups="base.group_user"/>
+
+    <menuitem id="grab_products_home"
+              name="Home"
+              parent="product_grabber_root"
+              action="action_product_grabber_dashboard_home"
+              sequence="5"/>
+
+    <!-- Commissions -->
+    <menuitem id="grab_products"
+              name="Import"
+              parent="product_grabber_root"
+              action="action_product_from_website_wizard"
+              sequence="10"/>
+
+    <menuitem id="grab_products_site_search"
+              name="Search &amp; Import"
+              parent="product_grabber_root"
+              action="action_site_search"
+              sequence="12"/>
+
+    <menuitem id="grab_products_log"
+              name="Import Log"
+              parent="product_grabber_root"
+              action="action_import_product_log"
+              sequence="20"/>
+
+    <menuitem id="grab_products_dashboard"
+              name="Dashboard"
+              parent="product_grabber_root"
+              action="action_import_product_dashboard"
+              sequence="15"/>
+
+    <menuitem id="grab_products_gallery"
+              name="Book Gallery"
+              parent="product_grabber_root"
+              action="action_product_gallery"
+              sequence="25"/>
+
+    <menuitem id="grab_products_duplicate_scan"
+              name="Scan for Duplicates"
+              parent="product_grabber_root"
+              action="action_duplicate_scan_wizard"
+              sequence="30"/>
+
+    <menuitem id="grab_products_duplicates"
+              name="Possible Duplicates"
+              parent="product_grabber_root"
+              action="action_product_grabber_duplicate"
+              sequence="35"/>
+</odoo>

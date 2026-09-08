@@ -1,192 +1,220 @@
 from odoo import models, fields, api
-from selenium import webdriver
-from selenium.webdriver.support.ui import WebDriverWait
 from bs4 import BeautifulSoup
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-import json,xmlrpc
 import requests
-import re,logging
-import time
+import re
+import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import urllib.parse
-from urllib.parse import urlparse
-from odoo.exceptions import UserError
-import base64
+from .base_extractor import BaseBookExtractor
 
-class importProductFromRokomari(models.TransientModel):
+_logger = logging.getLogger(__name__)
+
+
+class ImportProductFromRokomari(models.TransientModel):
     _inherit = 'import.product.from.website'
-    _description = 'import rokomari product from website'
+    _description = 'Import Rokomari product from website'
 
     def rokomari_products(self):
+        """Main method to trigger scraping for the provided URL."""
         url = self.source_url
         if not url or 'rokomari.com' not in url:
-            raise ValueError("Invalid Rokomari URL")
+            return False
 
-        # Session with retries
+        # Setup session with retry strategy for network reliability
         session = requests.Session()
         retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         adapter = HTTPAdapter(max_retries=retry)
-        session.mount('http://', adapter)
         session.mount('https://', adapter)
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
         }
-        session.headers.update(headers)
 
         try:
-            session.get('https://www.rokomari.com/', timeout=10)  # warm-up
-            response = session.get(url, timeout=15)
+            response = session.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
             extractor = RokomariExtractor(soup)
 
-            # self.product_name = extractor.get_title()
+            # Extracting data
             self.face_value = extractor.get_original_price()
             self.price = extractor.get_current_price()
             self.stock_qty = extractor.get_stock_quantity()
             self.ecommerce_description = extractor.get_description()
             self.image_url = extractor.get_image_url()
+            self.product_name = extractor.get_title()
 
             specs = extractor.get_specifications()
-            self.product_name=specs.get('title','')
+            # self.product_name = specs.get('title', 'Unknown Product')
             self.isbn = specs.get('isbn', '')
-            self.authors = specs.get('author', '')
-            self.publishers = specs.get('publisher', '')
+            self.authors = extractor.get_author() or specs.get('author', '')
+            self.publishers = extractor.get_publisher() or specs.get('publisher', '')
             self.pages = specs.get('pages', '')
             self.editions = specs.get('edition', '')
             self.language = specs.get('language', '')
             self.country = specs.get('country', '')
-            self.weight = specs.get('weight', 0.0)
+            self.weight = float(specs.get('weight', 0.0))
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            _logger.info(f"Successfully scraped: {self.product_name}")
             return True
 
         except Exception as e:
-            logging.exception(f"Error scraping {url}: {e}")
-            self.product_name = getattr(self, "product_name", "Unknown Product")
-            self.price = getattr(self, "price", 0.0)
-            self.stock_qty = getattr(self, "stock_qty", 0)
+            _logger.error(f"Failed to scrape {url}: {e}")
             return False
 
-class RokomariExtractor:
-    """Helper class to extract data from Rokomari product pages"""
 
+class RokomariExtractor(BaseBookExtractor):
     def __init__(self, soup):
         self.soup = soup
 
     def get_title(self):
-        selectors = [
-            ("h1", {"class": "mb-2 fs-20 fw-600"}),
-            ("h1", {"class": lambda x: x and "book-title" in x.lower()}),
-            ("h1", {"itemprop": "name"}),
-        ]
-        return self._extract_text(selectors, "Unknown Product")
+        # 1. Try OpenGraph Meta Tag (Usually most reliable)
+        og_title = self.soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            return og_title["content"].strip()
+
+        # 2. Try JSON-LD (Schema.org data)
+        script = self.soup.find("script", {"type": "application/ld+json"})
+        if script:
+            try:
+                import json
+                data = json.loads(script.string.strip())
+                # Handle cases where ld+json might be a list or a dict
+                if isinstance(data, list): data = data[0]
+                return data.get("name", "").strip()
+            except:
+                pass
+
+        # 3. Fallback: Try specific H1 tag
+        h1 = self.soup.find("h1", class_=lambda x: x and ("title" in x.lower() or "name" in x.lower()))
+        if h1:
+            return h1.get_text(strip=True)
+
+        return "Unknown Product"
 
     def get_current_price(self):
-        selectors = [
-            ("div", {"class": "fs-16 opacity-60"}),
-            ("span", {"class": "price-current"}),
-            ("span", {"class": lambda x: x and "price" in x.lower()}),
-        ]
-        return self._parse_price(self._extract_text(selectors))
+        # Prefer the structured product:price:amount meta tag - it's
+        # unambiguous (appears exactly once per page) and verified
+        # correct against a real product page. The old DOM selector
+        # (class 'sell-price') is kept as a fallback, but on its own it
+        # was unreliable: .find() only returns the FIRST match on the
+        # whole page, and this class name isn't necessarily unique to
+        # the main product - "you may also like" / "frequently bought
+        # together" widgets further down the same page can carry similar
+        # markup, silently grabbing a different product's price instead.
+        meta = self.soup.find("meta", property="product:price:amount")
+        if meta and meta.get("content"):
+            parsed = self._parse_price(meta["content"])
+            if parsed:
+                return parsed
+        elem = self.soup.find(class_='sell-price')
+        return self._parse_price(elem)
 
     def get_original_price(self):
-        selectors = [
-            ("del", {"class": "original-price"}),
-            ("span", {"class": "price-original"}),
-            ("del", {}),
-        ]
-        return self._parse_price(self._extract_text(selectors))
+        # There's no separate "original price" meta tag, but the
+        # discount-percentage meta tag lets the original price be
+        # derived reliably from the (already-verified) current price:
+        # original = current / (1 - discount%). Falls back to the old
+        # DOM selector, and finally to just the current price (no
+        # discount), if a discount percentage isn't present.
+        current = self.get_current_price()
+        discount_meta = self.soup.find("meta", property="product:custom_label_2")
+        if discount_meta and discount_meta.get("content") and current:
+            match = re.search(r'(\d+(?:\.\d+)?)\s*%', discount_meta["content"])
+            if match:
+                discount_pct = float(match.group(1))
+                if 0 < discount_pct < 100:
+                    return round(current / (1 - discount_pct / 100), 2)
+        elem = self.soup.find(class_='original-price')
+        parsed = self._parse_price(elem)
+        return parsed if parsed else current
 
     def get_stock_quantity(self):
         stock_elem = self.soup.find("span", id="available-quantity")
         if stock_elem:
-            stock_text = stock_elem.get_text(strip=True)
-            match = re.search(r'\d+', stock_text)
+            match = re.search(r'\d+', stock_elem.get_text())
             return int(match.group()) if match else 0
-        return 0  # safer default
+        return 0
 
     def get_description(self):
-        selectors = [
-            ("div", {"class": "shortSummery_summeryText__ycsRa"}),
-            ("div", {"class": lambda x: x and "summary" in x.lower()}),
-            ("div", {"itemprop": "description"}),
-        ]
-        desc_elem = self._find_element(selectors)
-        return desc_elem.decode_contents().strip() if desc_elem else ""
+        """
+        Extracts description from the specific element provided.
+        """
+        # Target the specific ID as it is the most reliable selector
+        desc_elem = self.soup.find("div", {"id": "js--summary-description"})
+
+        if desc_elem:
+            # We use get_text with a separator to maintain readability of paragraphs
+            # If you need to keep the HTML tags for Odoo (e.g. for an HTML field),
+            # use str(desc_elem) instead of get_text()
+            return desc_elem.get_text(separator='\n', strip=True)
+
+        # Fallback to class search if ID is missing
+        desc_elem_class = self.soup.select_one(".summary-description")
+        if desc_elem_class:
+            return desc_elem_class.get_text(separator='\n', strip=True)
+
+        return ""
 
     def get_image_url(self):
-        script_tag = self.soup.find("script", {"type": "application/ld+json"})
-
-        if script_tag:
-            data = json.loads(script_tag.string.strip())
-            image_url = data.get("image")
-            return image_url
-
-
+        og_image = self.soup.find("meta", property="og:image")
+        return og_image.get("content") if og_image else None
 
     def get_specifications(self):
+        # Table-based extraction - the original approach. Kept as a
+        # fallback: real usage showed this table sometimes missing from
+        # what a plain (non-JS-executing) HTTP request receives, likely
+        # because Rokomari's frontend is being migrated to a
+        # JS-rendered architecture (confirmed elsewhere: their search
+        # now runs on a separate next.rokomari.io subdomain) - some
+        # page sections may only populate after client-side JavaScript
+        # runs, which this scraper never executes.
         specs = {}
         for row in self.soup.select("table tr"):
             cells = row.find_all("td")
             if len(cells) >= 2:
                 key = cells[0].get_text(strip=True).lower()
-                value = cells[1].get_text(strip=True)
-
-                if "title" in key:
-                    specs['title'] = value
+                val = cells[1].get_text(strip=True)
                 if "isbn" in key:
-                    specs['isbn'] = value
+                    specs['isbn'] = val
                 elif "author" in key or "লেখক" in key:
-                    specs['author'] = value
+                    specs['author'] = val
                 elif "publisher" in key or "প্রকাশক" in key:
-                    specs['publisher'] = value
+                    specs['publisher'] = val
                 elif "page" in key or "পৃষ্ঠা" in key:
-                    match = re.search(r'\d+', value)
-                    specs['pages'] = match.group() if match else value
-                elif "edition" in key or "সংস্করণ" in key:
-                    specs['edition'] = value
-                elif "language" in key or "ভাষা" in key:
-                    specs['language'] = value
-                elif "country" in key or "দেশ" in key:
-                    specs['country'] = value
+                    specs['pages'] = val
                 elif "weight" in key:
-                    match = re.search(r'[\d.]+', value)
+                    match = re.search(r'[\d.]+', val)
                     specs['weight'] = float(match.group()) if match else 0.0
         return specs
 
-    # --- helpers ---
-    def _extract_text(self, selectors, default=""):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem.get_text(strip=True)
-        return default
+    def get_publisher(self):
+        """Prefer the structured product:brand meta tag - confirmed to
+        hold the publisher name on a real product page, and (like other
+        meta tags) part of the initial server-rendered HTML regardless
+        of whether the specs table itself is present."""
+        meta = self.soup.find("meta", property="product:brand")
+        if meta and meta.get("content"):
+            return meta["content"].strip()
+        return ''
 
-    def _find_element(self, selectors):
-        for tag, attrs in selectors:
-            elem = self.soup.find(tag, attrs)
-            if elem:
-                return elem
-        return None
+    def get_author(self):
+        """The author byline is a link matching /book/author/<id> with
+        NO slug after the id. Confirmed against a real page: Rokomari's
+        own 'trending searches' widget (which can appear earlier in the
+        DOM than the actual product content) links to author pages
+        WITH a slug (e.g. /book/author/1/humayun-ahmed), while the
+        current product's own byline, mini-cart preview, and footer
+        'Top Writer' links all use the no-slug form
+        (/book/author/47902). Filtering to the no-slug pattern and
+        taking the first match reliably lands on the current book's
+        author rather than an unrelated trending suggestion."""
+        for a in self.soup.select('a[href*="/book/author/"]'):
+            href = a.get('href', '')
+            if re.search(r'/book/author/\d+/?$', href):
+                text = a.get_text(strip=True)
+                if text:
+                    return text
+        return ''
 
-    def _parse_price(self, price_text):
-        if not price_text:
-            return 0.0
-        match = re.search(r'[\d,]+\.?\d*', price_text.replace('৳', '').replace('Tk', ''))
-        return float(match.group().replace(',', '')) if match else 0.0
-
-    def _normalize_url(self, url):
-        if not url:
-            return None
-        if url.startswith('//'):
-            return 'https:' + url
-        elif url.startswith('/'):
-            return 'https://www.rokomari.com' + url
-        return url

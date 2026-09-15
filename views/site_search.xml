@@ -7,8 +7,11 @@
             <field name="arch" type="xml">
                 <form>
                     <p>Search by title, author, or ISBN instead of pasting a URL directly.
-                       Currently supports live search on Rokomari only - for other sites,
-                       paste the product URL on the Import page as usual.</p>
+                       Currently supports live search on Rokomari, Anannya Books, and
+                       Mowla Brothers - these use a real browser session to load results,
+                       so a search may take several seconds and is still fairly new/
+                       unverified. For other sites, paste the product URL on the Import
+                       page as usual.</p>
                     <group>
                         <field name="site"/>
                         <field name="query" placeholder="e.g. Paradoxical Sajid, or an author name, or an ISBN"/>

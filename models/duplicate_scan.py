@@ -116,6 +116,43 @@ class ProductGrabberDuplicate(models.Model):
             },
         }
 
+    def action_merge_selected(self):
+        """Bulk version of action_merge_partners - runs on whichever
+        records are ticked (Odoo's standard list-view row selection,
+        no custom field needed) via the 'Action' menu. Skips product
+        pairs (still review-only, never auto-merged) and anything not
+        pending, and reports a summary of what happened rather than
+        merging silently."""
+        merged = 0
+        skipped_products = 0
+        skipped_other = 0
+        for rec in self:
+            if rec.state != 'pending':
+                skipped_other += 1
+                continue
+            if rec.kind == 'product':
+                skipped_products += 1
+                continue
+            rec.action_merge_partners()
+            merged += 1
+
+        message_parts = ["%d merged" % merged]
+        if skipped_products:
+            message_parts.append("%d product pair(s) skipped - review manually" % skipped_products)
+        if skipped_other:
+            message_parts.append("%d already handled" % skipped_other)
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': "Bulk merge finished",
+                'message': ', '.join(message_parts) + '.',
+                'type': 'success' if merged else 'warning',
+                'sticky': True,
+            },
+        }
+
     @api.model
     def _scan_partners(self, is_writer=False, is_publisher=False):
         kind = 'author' if is_writer else 'publisher'

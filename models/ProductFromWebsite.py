@@ -190,10 +190,10 @@ class importProductFromWebsite(models.TransientModel):
     selected_duplicate_id = fields.Many2one(
         'product.template',
         string="Product to Update",
-        help="Auto-filled when there's exactly one confident duplicate. You can also "
-             "search and pick any product yourself - including one of the 'Closest "
-             "Matching Products' below, if you decide it's actually the same item - "
-             "then use 'Update Existing Product' instead of creating a new one."
+        help="The existing product that will be overwritten when you click "
+             "'Update This Product' on one of the rows in 'Possible duplicate "
+             "found' below. Auto-filled when there's exactly one confident "
+             "duplicate."
     )
     nearest_product_ids = fields.Many2many(
         'product.template',
@@ -206,27 +206,35 @@ class importProductFromWebsite(models.TransientModel):
              "the closest-matching names, in case one of them is actually the same "
              "item under a different title."
     )
-    author_suggestion_ids = fields.Many2many(
-        'res.partner',
-        'import_product_author_suggestion_rel',
-        'wizard_id',
-        'partner_id',
-        string="Similar Authors Found",
-        readonly=True,
-        help="More than one existing author looks similar to the proposed name, "
-             "so none was auto-selected. Pick the right one (or none, if it's "
-             "genuinely new) in the Authors field above."
+    duplicate_suggestion_line_ids = fields.One2many(
+        'import.product.duplicate.suggestion', 'wizard_id',
+        string="Similar Products Found",
+        help="Existing products that might be this same item - either a "
+             "confident duplicate (matched by ISBN, source URL, or exact "
+             "title) or just a close title match worth a look. Click "
+             "'Update This Product' on the correct row to overwrite that "
+             "product with the newly-scraped data - no need to select "
+             "anything first."
     )
-    publisher_suggestion_ids = fields.Many2many(
-        'res.partner',
-        'import_product_publisher_suggestion_rel',
-        'wizard_id',
-        'partner_id',
+    author_suggestion_line_ids = fields.One2many(
+        'import.product.partner.suggestion', 'wizard_id',
+        domain=[('kind', '=', 'author')],
+        string="Similar Authors Found",
+        help="Existing authors that look similar to the proposed name. None are "
+             "auto-added to Authors - tick the checkbox next to whichever one(s) "
+             "are actually correct and click 'Apply Selected Authors', or leave "
+             "it and create a new one if none of these are actually the same "
+             "person."
+    )
+    publisher_suggestion_line_ids = fields.One2many(
+        'import.product.partner.suggestion', 'wizard_id',
+        domain=[('kind', '=', 'publisher')],
         string="Similar Publishers Found",
-        readonly=True,
-        help="More than one existing publisher looks similar to the proposed name, "
-             "so none was auto-selected. Pick the right one (or none, if it's "
-             "genuinely new) in the Publishers field above."
+        help="Existing publishers that look similar to the proposed name. None "
+             "are auto-added to Publishers - tick the checkbox next to whichever "
+             "one(s) are actually correct and click 'Apply Selected Publishers', "
+             "or leave it and create a new one if none of these are actually the "
+             "same publisher."
     )
     category_text = fields.Char("Category (proposed)")
     category_suggestion_ids = fields.Many2many(
@@ -362,7 +370,7 @@ class importProductFromWebsite(models.TransientModel):
         against your own catalog."""
         return similarity(a, b)
 
-    def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False, populate_ambiguous=True):
+    def _find_matching_partners(self, names_str, is_writer=False, is_publisher=False, interactive=True):
         """Search existing res.partner records (authors/publishers) that
         look similar to each proposed name, so we reuse them instead of
         creating duplicate author/publisher partners.
@@ -370,20 +378,22 @@ class importProductFromWebsite(models.TransientModel):
         Similarity is scored with difflib against a candidate pool
         (pre-filtered in the DB by shared significant words, since we
         can't run a similarity score across an entire partner table
-        without loading it). For each proposed name:
-        - exactly one candidate scores above the similarity threshold
-          -> auto-selected
-        - more than one scores above threshold -> too ambiguous to guess
-          which one is right, so (when populate_ambiguous is True, the
-          interactive single-import case) ALL of them are added to the
-          real field - the user then just removes whichever ones are
-          wrong using the tag's own '×', no separate read-only picker
-          needed. In bulk import (populate_ambiguous=False) that would
-          mean silently attaching several wrong authors with no human
-          around to fix it, so there none are added - they're only
-          returned as suggestions, for the summary/log to flag instead.
-        - none score above threshold -> nothing to match, create new as
-          before
+        without loading it).
+
+        interactive=True (the single-import case, a human is right
+        there to review): the real Authors/Publishers field is NEVER
+        auto-filled, no matter how confident a single match is - every
+        candidate found (one or several) is returned as a suggestion
+        for the user to explicitly pick via the Author/Publisher picker
+        + 'Add' button. This trades a click for certainty: nothing gets
+        attached without the person actually choosing it.
+
+        interactive=False (bulk import, no human in the loop): a
+        single unambiguous match is still auto-attached, since forcing
+        every bulk-imported book to need manual author review would
+        defeat the point of bulk import; multiple candidates are still
+        left for manual follow-up (flagged in the summary/log), same as
+        before.
 
         Returns a tuple: (auto_matched, suggestions, ambiguous_names)
         """
@@ -417,59 +427,95 @@ class importProductFromWebsite(models.TransientModel):
             scored = [(p, self._similarity(name, p.name)) for p in candidates]
             above_threshold = [p for p, score in scored if score >= PARTNER_SIMILARITY_THRESHOLD]
 
-            if len(above_threshold) == 1:
+            if not above_threshold:
+                continue  # nothing to match, create new as before
+
+            if interactive:
+                suggestions |= Partner.browse([p.id for p in above_threshold])
+                if len(above_threshold) > 1:
+                    ambiguous_names.append(
+                        "%s (%d similar matches: %s)"
+                        % (name, len(above_threshold), ', '.join(p.name for p in above_threshold))
+                    )
+            elif len(above_threshold) == 1:
                 auto_matched |= above_threshold[0]
-            elif len(above_threshold) > 1:
+            else:
                 suggestions |= Partner.browse([p.id for p in above_threshold])
                 ambiguous_names.append(
                     "%s (%d similar matches: %s)"
                     % (name, len(above_threshold), ', '.join(p.name for p in above_threshold))
                 )
-                if populate_ambiguous:
-                    auto_matched |= Partner.browse([p.id for p in above_threshold])
-            # zero above threshold: leave it for manual creation
 
         return auto_matched, suggestions, ambiguous_names
 
     def action_create_author(self):
-        """Open Odoo's standard Contact form (target=new) to create a new
-        author, pre-filled with the proposed name if there is one. Uses
-        the standard res.partner form as-is - it already has Image,
-        Phone, Mobile and Email fields built in, so those can be filled
-        in by hand right here. After saving, search for the name in the
-        Authors field above to link them to this product - the wizard
-        doesn't auto-attach the newly created contact, since target=new
-        dialogs don't have a reliable way to report back into an
-        unrelated field on this record."""
+        """Create a new author contact right away (pre-filled with the
+        proposed name, if any) and immediately add it to Authors, then
+        open its form in a popup so the rest of its details - photo,
+        phone, email - can be filled in by hand. Creating the record and
+        linking it *before* opening the popup (rather than trying to
+        react to the popup closing) is what makes the auto-link
+        reliable."""
         self.ensure_one()
         names = self._split_names(self.authors)
+        partner = self.env['res.partner'].create({
+            'is_writer': True,
+            'name': names[0] if names else "New Author",
+        })
+        self.author_ids = [(4, partner.id)]
         return {
             'type': 'ir.actions.act_window',
             'name': "New Author",
             'res_model': 'res.partner',
+            'res_id': partner.id,
             'view_mode': 'form',
             'target': 'new',
-            'context': {
-                'default_is_writer': True,
-                'default_name': names[0] if names else False,
-            },
         }
 
     def action_create_publisher(self):
         """Same as action_create_author, for publishers."""
         self.ensure_one()
         names = self._split_names(self.publishers)
+        partner = self.env['res.partner'].create({
+            'is_publisher': True,
+            'name': names[0] if names else "New Publisher",
+        })
+        self.publisher_ids = [(4, partner.id)]
         return {
             'type': 'ir.actions.act_window',
             'name': "New Publisher",
             'res_model': 'res.partner',
+            'res_id': partner.id,
             'view_mode': 'form',
             'target': 'new',
-            'context': {
-                'default_is_publisher': True,
-                'default_name': names[0] if names else False,
-            },
         }
+
+
+    @api.onchange('author_suggestion_line_ids')
+    def _onchange_author_suggestion_line_ids(self):
+        """Keep Authors in sync with the checkboxes in 'Similar Authors
+        Found' as they're ticked/unticked - no separate 'Apply' button
+        needed. Only touches partners that are actually part of this
+        suggestion list, so anything added another way (typed directly
+        into Authors, or via 'New Author') is left alone.
+
+        Uses plain id sets and an explicit full-replace command rather
+        than recordset +/- operators, which is more predictable across
+        repeated onchange calls within the same edit session."""
+        all_suggested_ids = set(self.author_suggestion_line_ids.mapped('partner_id').ids)
+        checked_ids = set(self.author_suggestion_line_ids.filtered('selected').mapped('partner_id').ids)
+        current_ids = set(self.author_ids.ids)
+        new_ids = (current_ids - all_suggested_ids) | checked_ids
+        self.author_ids = [(6, 0, list(new_ids))]
+
+    @api.onchange('publisher_suggestion_line_ids')
+    def _onchange_publisher_suggestion_line_ids(self):
+        """Same as _onchange_author_suggestion_line_ids, for publishers."""
+        all_suggested_ids = set(self.publisher_suggestion_line_ids.mapped('partner_id').ids)
+        checked_ids = set(self.publisher_suggestion_line_ids.filtered('selected').mapped('partner_id').ids)
+        current_ids = set(self.publisher_ids.ids)
+        new_ids = (current_ids - all_suggested_ids) | checked_ids
+        self.publisher_ids = [(6, 0, list(new_ids))]
 
     def _suggest_category(self):
         """Suggest a product.category using only text already scraped from
@@ -708,13 +754,13 @@ class importProductFromWebsite(models.TransientModel):
     # Fetch / scrape
     # ------------------------------------------------------------------
 
-    def _scrape_source_url(self, populate_ambiguous=True):
+    def _scrape_source_url(self, interactive=True):
         """Detect which site self.source_url belongs to and run the
         matching *_products() scraper method, populating the fields on
-        this record. Shared by the single-URL 'Fetch Data' button and the
-        bulk-import loop (which passes populate_ambiguous=False, since
-        there's no one to review an author/publisher field that got
-        several unreviewed candidates stuffed into it)."""
+        this record. Shared by the single-URL 'Fetch Data' button
+        (interactive=True) and the bulk-import loop
+        (interactive=False, since there's no one to review a pick-list
+        of author/publisher candidates mid-loop)."""
         self.ensure_one()
         url = urlparse(self.source_url)
         host = url.hostname or ''
@@ -729,21 +775,31 @@ class importProductFromWebsite(models.TransientModel):
 
         self.publisher_ids = False
         self.author_ids = False
-        self.author_suggestion_ids = False
-        self.publisher_suggestion_ids = False
+        self.author_suggestion_line_ids = [(5, 0, 0)]
+        self.publisher_suggestion_line_ids = [(5, 0, 0)]
         self.category_suggestion_ids = False
         self.duplicate_product_ids = False
         self.nearest_product_ids = False
+        self.duplicate_suggestion_line_ids = [(5, 0, 0)]
         self.force_duplicate = False
         self.review_notice = False
         self.source_site_label = ALL_SUPPORTED_SITES.get(domain_name, host)
         result = getattr(self, '%s_products' % domain_name)()
 
         if not result:
+            hint = (
+                "the site may be unreachable, or its page structure may have changed"
+            )
+            if domain_name in ('guardianpubs', 'mayurpankhi'):
+                hint = (
+                    "this site needs a real browser session (Selenium/Chrome) to load - "
+                    "if that's not installed or working on this server, this is where "
+                    "it would fail. Check the Odoo server log for a chromedriver/Chrome "
+                    "error, or that the site's page structure changed"
+                )
             raise UserError(
-                "Fetching from %s failed - the site may be unreachable, or its page "
-                "structure may have changed. Check the Odoo server log for the exact "
-                "error (search for 'Failed to scrape')." % self.source_site_label
+                "Fetching from %s failed - %s. Check the Odoo server log for the exact "
+                "error (search for 'Failed to scrape')." % (self.source_site_label, hint)
             )
         if self.product_name and not (self.authors or self.publishers or self.isbn):
             self.review_notice = (
@@ -753,16 +809,25 @@ class importProductFromWebsite(models.TransientModel):
                 "Worth double-checking these fields by hand before importing."
             )
 
-        # Auto-link proposed authors/publishers to existing partners where
-        # unambiguous. When more than one similar match is found: in the
-        # interactive case (populate_ambiguous=True) all candidates are
-        # added directly to Authors/Publishers, so picking the right one
-        # is just a matter of removing the wrong tag(s) with their '×' -
-        # no separate, unclickable "suggestions" list to fight with.
-        self.author_ids, self.author_suggestion_ids, _author_ambiguous = \
-            self._find_matching_partners(self.authors, is_writer=True, populate_ambiguous=populate_ambiguous)
-        self.publisher_ids, self.publisher_suggestion_ids, _publisher_ambiguous = \
-            self._find_matching_partners(self.publishers, is_publisher=True, populate_ambiguous=populate_ambiguous)
+        # Interactive (single-import): Authors/Publishers stay blank no
+        # matter how confident a match is - every candidate found shows
+        # up in the 'Similar ... Found' checkbox list instead, and the
+        # user explicitly ticks (and clicks Apply) to attach one or
+        # several. Bulk import keeps auto-attaching an unambiguous single
+        # match, since there's no one to tick a checkbox for every book
+        # in a large run.
+        author_auto, author_suggestions, _author_ambiguous = \
+            self._find_matching_partners(self.authors, is_writer=True, interactive=interactive)
+        publisher_auto, publisher_suggestions, _publisher_ambiguous = \
+            self._find_matching_partners(self.publishers, is_publisher=True, interactive=interactive)
+        self.author_ids = author_auto
+        self.publisher_ids = publisher_auto
+        self.author_suggestion_line_ids = [
+            (0, 0, {'kind': 'author', 'partner_id': p.id}) for p in author_suggestions
+        ]
+        self.publisher_suggestion_line_ids = [
+            (0, 0, {'kind': 'publisher', 'partner_id': p.id}) for p in publisher_suggestions
+        ]
 
         # Same idea for category: only auto-fill it if the user hasn't
         # already picked one themselves (e.g. re-fetching after a manual
@@ -778,6 +843,10 @@ class importProductFromWebsite(models.TransientModel):
         )
         if not self.duplicate_product_ids:
             self.nearest_product_ids = self._find_nearest_products()
+        self.duplicate_suggestion_line_ids = (
+            [(0, 0, {'match_type': 'duplicate', 'product_id': p.id}) for p in self.duplicate_product_ids]
+            + [(0, 0, {'match_type': 'nearest', 'product_id': p.id}) for p in self.nearest_product_ids]
+        )
         return result
 
     def fetch_data(self):
@@ -787,30 +856,30 @@ class importProductFromWebsite(models.TransientModel):
         duplicates = self.duplicate_product_ids
         if len(duplicates) == 1:
             warnings.append(
-                "An identical product already exists: '%s'. Click 'Update Existing "
-                "Product' to edit it directly, or tick 'Create Anyway' if this is "
-                "genuinely a different product."
+                "An identical product already exists: '%s'. Click 'Update This "
+                "Product' on it below to edit it directly, or tick 'Create "
+                "Anyway' if this is genuinely a different product."
                 % duplicates.name
             )
         elif len(duplicates) > 1:
             warnings.append(
-                "Multiple possible duplicates found: %s. Pick the correct one in "
-                "'Product to Update' below, then click 'Update Existing Product' - "
-                "or tick 'Create Anyway' if none of them are actually the same product."
+                "Multiple possible duplicates found: %s. Click 'Update This "
+                "Product' on the correct row below, or tick 'Create Anyway' if "
+                "none of them are actually the same product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
-        if self.author_suggestion_ids:
+        if self.author_suggestion_line_ids:
             warnings.append(
-                "Multiple existing authors looked similar to the proposed name(s), so "
-                "all of them were added to the Authors field below - remove whichever "
-                "one(s) don't actually belong using the '×' on each tag."
+                "Found existing author(s) that look similar to the proposed name - "
+                "tick the checkbox next to the right one(s) in 'Similar Authors "
+                "Found' to add them."
             )
-        if self.publisher_suggestion_ids:
+        if self.publisher_suggestion_line_ids:
             warnings.append(
-                "Multiple existing publishers looked similar to the proposed name(s), "
-                "so all of them were added to the Publishers field below - remove "
-                "whichever one(s) don't actually belong using the '×' on each tag."
+                "Found existing publisher(s) that look similar to the proposed name "
+                "- tick the checkbox next to the right one(s) in 'Similar Publishers "
+                "Found' to add them."
             )
         if self.category_suggestion_ids:
             warnings.append(
@@ -898,15 +967,16 @@ class importProductFromWebsite(models.TransientModel):
             if len(duplicates) == 1:
                 raise UserError(
                     "An identical product already exists: '%s'.\n\n"
-                    "Use 'Update Existing Product' to edit it directly, or tick "
-                    "'Create Anyway' if this is genuinely a different product."
+                    "Click 'Update This Product' on it below to edit it "
+                    "directly, or tick 'Create Anyway' if this is genuinely a "
+                    "different product."
                     % duplicates.name
                 )
             raise UserError(
                 "Multiple possible duplicates found: %s.\n\n"
-                "Pick the correct one in 'Product to Update' and use 'Update Existing "
-                "Product', or tick 'Create Anyway' if none of them are actually the "
-                "same product."
+                "Click 'Update This Product' on the correct row below, or "
+                "tick 'Create Anyway' if none of them are actually the same "
+                "product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
@@ -928,9 +998,10 @@ class importProductFromWebsite(models.TransientModel):
 
     def update_existing_product(self):
         """Instead of creating a new product, refresh the fields on an
-        existing product - either the one the user explicitly picked in
-        'Product to Update' (required when more than one duplicate was
-        found), or the single unambiguous duplicate."""
+        existing product - normally triggered via 'Update This Product' on
+        a specific row in 'Possible duplicate found', which sets
+        selected_duplicate_id just before calling this. Falls back to the
+        single unambiguous duplicate if selected_duplicate_id isn't set."""
         self.ensure_one()
         product = self.selected_duplicate_id
         if not product:
@@ -943,8 +1014,8 @@ class importProductFromWebsite(models.TransientModel):
             if len(duplicates) > 1:
                 raise UserError(
                     "Multiple possible duplicates found: %s.\n\n"
-                    "Please pick the one you want to update in the 'Product to Update' "
-                    "field first."
+                    "Click 'Update This Product' on the correct row in "
+                    "'Possible duplicate found' first."
                     % ', '.join(duplicates.mapped('name'))
                 )
             product = duplicates[0]
@@ -1025,7 +1096,7 @@ class importProductFromWebsite(models.TransientModel):
             })
             try:
                 try:
-                    temp._scrape_source_url(populate_ambiguous=False)
+                    temp._scrape_source_url(interactive=False)
                 except UserError as e:
                     raise
                 except Exception as e:
@@ -1053,7 +1124,7 @@ class importProductFromWebsite(models.TransientModel):
                 product = temp._create_product_record()
                 created += 1
                 note_parts = []
-                if temp.author_suggestion_ids or temp.publisher_suggestion_ids:
+                if temp.author_suggestion_line_ids or temp.publisher_suggestion_line_ids:
                     note_parts.append("author/publisher")
                 if temp.category_suggestion_ids:
                     note_parts.append("category")

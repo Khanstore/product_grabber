@@ -83,7 +83,7 @@ class RokomariExtractor(BaseBookExtractor):
                 # Handle cases where ld+json might be a list or a dict
                 if isinstance(data, list): data = data[0]
                 return data.get("name", "").strip()
-            except:
+            except (ValueError, KeyError, IndexError, AttributeError, TypeError):
                 pass
 
         # 3. Fallback: Try specific H1 tag

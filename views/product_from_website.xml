@@ -51,24 +51,43 @@
                                 <group>
                                     <group>
                                         <field name="authors"/>
-                                    </group>
-                                    <group>
                                         <field name="author_ids" widget="many2many_tags" domain="[ ('is_writer', '=', True)]" context="{'default_is_writer':1}"/>
                                         <button string="New Author" type="object" name="action_create_author"
+                                                class="btn-link" icon="fa-plus"/>
+                                    </group>
+                                    <group>
+                                        <field name="publishers"/>
+                                        <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', True)]" context="{'default_is_publisher':1}"/>
+                                        <button string="New Publisher" type="object" name="action_create_publisher"
                                                 class="btn-link" icon="fa-plus"/>
                                     </group>
                                 </group>
 
                                 <group>
                                     <group>
-                                        <field name="publishers"/>
+                                        <div class="alert alert-info" role="alert" invisible="not author_suggestion_line_ids">
+                                            <strong>Similar Authors Found</strong> - tick to add, untick to remove:
+                                            <field name="author_suggestion_line_ids" nolabel="1">
+                                                <list editable="bottom" create="false" delete="false">
+                                                    <field name="partner_name" readonly="1"/>
+                                                    <field name="selected"/>
+                                                </list>
+                                            </field>
+                                        </div>
                                     </group>
                                     <group>
-                                        <field name="publisher_ids" widget="many2many_tags" domain="[ ('is_publisher', '=', True)]" context="{'default_is_publisher':1}"/>
-                                        <button string="New Publisher" type="object" name="action_create_publisher"
-                                                class="btn-link" icon="fa-plus"/>
+                                        <div class="alert alert-info" role="alert" invisible="not publisher_suggestion_line_ids">
+                                            <strong>Similar Publishers Found</strong> - tick to add, untick to remove:
+                                            <field name="publisher_suggestion_line_ids" nolabel="1">
+                                                <list editable="bottom" create="false" delete="false">
+                                                    <field name="partner_name" readonly="1"/>
+                                                    <field name="selected"/>
+                                                </list>
+                                            </field>
+                                        </div>
                                     </group>
                                 </group>
+
 
                                 <div class="d-flex gap-5 my-3">
                                     <div>
@@ -104,28 +123,29 @@
                                     </group>
                                 </group>
 
-                                <div class="alert alert-warning" role="alert" invisible="not duplicate_product_ids">
-                                    <strong>Possible duplicate found</strong>
-                                    <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
+                                <div class="alert alert-warning" role="alert" invisible="not duplicate_suggestion_line_ids">
+                                    <strong>Possible duplicate found</strong> - click 'View' to review a product, or
+                                    'Update This Product' on the correct row to overwrite it with the newly-scraped
+                                    data:
+                                    <field name="duplicate_suggestion_line_ids" nolabel="1">
+                                        <list create="false" delete="false">
+                                            <field name="product_name" readonly="1"/>
+                                            <field name="match_type" readonly="1"/>
+                                            <button name="action_view_product" type="object"
+                                                    string="View" icon="fa-eye"
+                                                    class="btn-link"/>
+                                            <button name="action_update_this_product" type="object"
+                                                    string="Update This Product" icon="fa-refresh"
+                                                    class="btn-link"
+                                                    confirm="This will overwrite the existing product with the newly-scraped data. Continue?"/>
+                                        </list>
+                                    </field>
                                 </div>
 
-                                <div class="alert alert-info" role="alert"
-                                     invisible="not nearest_product_ids or duplicate_product_ids">
-                                    <strong>Worth a look - no confident duplicate, but these are close by name</strong>
-                                    <field name="nearest_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
-                                </div>
-
-                                <div class="d-flex align-items-center gap-3 mb-2"
-                                     invisible="not duplicate_product_ids and not nearest_product_ids">
-                                    <field name="selected_duplicate_id" nolabel="1"
-                                           placeholder="Pick which product to update instead"
-                                           style="min-width:260px;"/>
-                                    <button string="Update Existing Product" type="object" name="update_existing_product"
-                                            class="btn-secondary" invisible="not selected_duplicate_id"/>
+                                <div class="d-flex align-items-center gap-3 mt-2">
+                                    <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
                                     <field name="force_duplicate" invisible="not duplicate_product_ids"/>
                                 </div>
-
-                                <button string="Import Product" type="object" name="create_product" class="btn-primary mt-2"/>
                             </div>
                         </page>
 

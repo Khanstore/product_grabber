@@ -60,6 +60,23 @@ class ImportProductFromGuardianpubs(models.TransientModel):
             self.country               = extractor.get_country()
             self.weight                = extractor.get_weight()
 
+            # The above all rely on a <th>/<td> table layout. Some pages
+            # use a different structure entirely (SPA-style <li>/div
+            # blocks, or <dl> definition lists) - get_specifications()
+            # tries all three and is used here only to fill in whichever
+            # fields came back empty, rather than overriding anything
+            # the primary extraction already found.
+            if not (self.publishers and self.isbn and self.authors and self.pages
+                    and self.editions and self.language and self.country):
+                specs = extractor.get_specifications()
+                self.publishers = self.publishers or specs.get('publisher', '')
+                self.isbn = self.isbn or specs.get('isbn', '')
+                self.authors = self.authors or specs.get('author', '')
+                self.pages = self.pages or specs.get('pages', '')
+                self.editions = self.editions or specs.get('edition', '')
+                self.language = self.language or specs.get('language', '')
+                self.country = self.country or specs.get('country', '')
+
             _logger.info(f"✓ Successfully scraped from Guardianpubs: {self.product_name}")
             return True
 

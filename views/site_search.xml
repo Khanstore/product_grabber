@@ -7,11 +7,10 @@
             <field name="arch" type="xml">
                 <form>
                     <p>Search by title, author, or ISBN instead of pasting a URL directly.
-                       Currently supports live search on Rokomari, Anannya Books, and
-                       Mowla Brothers - these use a real browser session to load results,
-                       so a search may take several seconds and is still fairly new/
-                       unverified. For other sites, paste the product URL on the Import
-                       page as usual.</p>
+                       Sites with live-search support use their own search endpoint;
+                       JavaScript-heavy sites may use the optional browser fallback.
+                       For sites without live-search support, paste the product URL on
+                       the Import page as usual.</p>
                     <group>
                         <field name="site"/>
                         <field name="query" placeholder="e.g. Paradoxical Sajid, or an author name, or an ISBN"/>

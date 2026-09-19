@@ -1,22 +1,18 @@
-from odoo import models, fields, api
+from odoo import models
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from bs4 import BeautifulSoup
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-import json,xmlrpc
+import json
 import requests
-import re,logging
+import re, logging
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import urllib.parse
-from urllib.parse import urlparse
-from odoo.exceptions import UserError
-import base64
 from .base_extractor import BaseBookExtractor
 
-class importProductFromRokomari(models.TransientModel):
+class ImportProductFromProthoma(models.TransientModel):
     _inherit = 'import.product.from.website'
     _description = 'import  product from Prothoma.com website'
 
@@ -64,7 +60,7 @@ class importProductFromRokomari(models.TransientModel):
             self.country = specs.get('country', '')
             self.weight = specs.get('weight', 0.0)
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            logging.info("Successfully scraped Prothoma product: %s", self.product_name)
             return True
 
         except Exception as e:
@@ -75,7 +71,7 @@ class importProductFromRokomari(models.TransientModel):
             return False
 
 class ProthomaExtractor(BaseBookExtractor):
-    """Helper class to extract data from Rokomari product pages"""
+    """Extract product data from Prothoma product pages."""
 
     def __init__(self, soup):
         self.soup = soup

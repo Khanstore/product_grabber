@@ -1,9 +1,9 @@
 {
     'name': 'product_grabber',
-    'version': '18.0.0.38',
+    'version': '18.0.0.69',
     'author': 'SM Ashraf',
     'category': 'Reporting',
-    'summary': 'grab Product data to odoo from Rokomary, PBS, Sottayan etc',
+    'summary': 'Import book/product data into Odoo from supported source websites',
     'depends': ['book_shop'],
     'external_dependencies': {
         'python': ['bs4', 'requests', 'selenium'],

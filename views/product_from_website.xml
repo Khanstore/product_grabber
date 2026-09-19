@@ -27,16 +27,21 @@
                                     </span>
                                 </div>
 
-                                <div class="d-flex gap-3 mb-3">
+                                <div class="d-flex gap-3 mb-3 align-items-start">
                                     <div class="product_grabber_cover_box">
                                         <field name="image_url" widget="image_url" nolabel="1"/>
                                     </div>
-                                    <div>
+                                    <div class="d-flex flex-column gap-2" style="min-width:420px;">
                                         <field name="google_search_url"
                                                widget="url"
                                                text="Search on Google Images"
-                                               invisible="not google_search_url"/>
-                                        <field name="image_url"/>
+                                               invisible="not google_search_url"
+                                               readonly="1"
+                                               nolabel="1"/>
+                                        <field name="image_url"
+                                               string="Image URL"
+                                               placeholder="https://..."
+                                               readonly="1"/>
                                     </div>
                                 </div>
 
@@ -74,6 +79,9 @@
                                                 </list>
                                             </field>
                                         </div>
+                                        <div class="alert alert-light text-muted" role="alert" invisible="author_suggestion_line_ids">
+                                            No similar existing author found - use "New Author" above if this is a new one.
+                                        </div>
                                     </group>
                                     <group>
                                         <div class="alert alert-info" role="alert" invisible="not publisher_suggestion_line_ids">
@@ -84,6 +92,9 @@
                                                     <field name="selected"/>
                                                 </list>
                                             </field>
+                                        </div>
+                                        <div class="alert alert-light text-muted" role="alert" invisible="publisher_suggestion_line_ids">
+                                            No similar existing publisher found - use "New Publisher" above if this is a new one.
                                         </div>
                                     </group>
                                 </group>
@@ -112,6 +123,11 @@
                                     </div>
                                 </div>
 
+                                <div class="alert alert-secondary mt-2" role="alert" invisible="not data_quality_summary">
+                                    <strong>Extraction Check</strong>
+                                    <field name="data_quality_summary" nolabel="1"/>
+                                </div>
+
                                 <group>
                                     <group>
                                         <field name="categ_id"/>
@@ -123,29 +139,28 @@
                                     </group>
                                 </group>
 
-                                <div class="alert alert-warning" role="alert" invisible="not duplicate_suggestion_line_ids">
-                                    <strong>Possible duplicate found</strong> - click 'View' to review a product, or
-                                    'Update This Product' on the correct row to overwrite it with the newly-scraped
-                                    data:
-                                    <field name="duplicate_suggestion_line_ids" nolabel="1">
-                                        <list create="false" delete="false">
-                                            <field name="product_name" readonly="1"/>
-                                            <field name="match_type" readonly="1"/>
-                                            <button name="action_view_product" type="object"
-                                                    string="View" icon="fa-eye"
-                                                    class="btn-link"/>
-                                            <button name="action_update_this_product" type="object"
-                                                    string="Update This Product" icon="fa-refresh"
-                                                    class="btn-link"
-                                                    confirm="This will overwrite the existing product with the newly-scraped data. Continue?"/>
-                                        </list>
-                                    </field>
+                                <div class="alert alert-warning" role="alert" invisible="not duplicate_product_ids">
+                                    <strong>Possible duplicate found</strong>
+                                    <field name="duplicate_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
                                 </div>
 
-                                <div class="d-flex align-items-center gap-3 mt-2">
-                                    <button string="Import Product" type="object" name="create_product" class="btn-primary"/>
+                                <div class="alert alert-info" role="alert"
+                                     invisible="not nearest_product_ids or duplicate_product_ids">
+                                    <strong>Worth a look - no confident duplicate, but these are close by name</strong>
+                                    <field name="nearest_product_ids" widget="many2many_tags" readonly="1" nolabel="1"/>
+                                </div>
+
+                                <div class="d-flex align-items-center gap-3 mb-2"
+                                     invisible="not duplicate_product_ids and not nearest_product_ids">
+                                    <field name="selected_duplicate_id" nolabel="1"
+                                           placeholder="Pick which product to update instead"
+                                           style="min-width:260px;"/>
+                                    <button string="Update Existing Product" type="object" name="update_existing_product"
+                                            class="btn-secondary" invisible="not selected_duplicate_id"/>
                                     <field name="force_duplicate" invisible="not duplicate_product_ids"/>
                                 </div>
+
+                                <button string="Import Product" type="object" name="create_product" class="btn-primary mt-2"/>
                             </div>
                         </page>
 

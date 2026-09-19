@@ -190,10 +190,10 @@ class importProductFromWebsite(models.TransientModel):
     selected_duplicate_id = fields.Many2one(
         'product.template',
         string="Product to Update",
-        help="The existing product that will be overwritten when you click "
-             "'Update This Product' on one of the rows in 'Possible duplicate "
-             "found' below. Auto-filled when there's exactly one confident "
-             "duplicate."
+        help="Auto-filled when there's exactly one confident duplicate. You can also "
+             "search and pick any product yourself - including one of the 'Closest "
+             "Matching Products' below, if you decide it's actually the same item - "
+             "then use 'Update Existing Product' instead of creating a new one."
     )
     nearest_product_ids = fields.Many2many(
         'product.template',
@@ -205,16 +205,6 @@ class importProductFromWebsite(models.TransientModel):
         help="No confident duplicate was found, but these existing products have "
              "the closest-matching names, in case one of them is actually the same "
              "item under a different title."
-    )
-    duplicate_suggestion_line_ids = fields.One2many(
-        'import.product.duplicate.suggestion', 'wizard_id',
-        string="Similar Products Found",
-        help="Existing products that might be this same item - either a "
-             "confident duplicate (matched by ISBN, source URL, or exact "
-             "title) or just a close title match worth a look. Click "
-             "'Update This Product' on the correct row to overwrite that "
-             "product with the newly-scraped data - no need to select "
-             "anything first."
     )
     author_suggestion_line_ids = fields.One2many(
         'import.product.partner.suggestion', 'wizard_id',
@@ -288,6 +278,11 @@ class importProductFromWebsite(models.TransientModel):
              "doesn't disappear once the popup is dismissed."
     )
     source_site_label = fields.Char(readonly=True, help="Which supported site this was fetched from.")
+    data_quality_summary = fields.Text(
+        string="Extraction Check",
+        readonly=True,
+        help="Quick audit of the scraped fields. This is informational and does not block import.",
+    )
 
     google_search_url = fields.Char(compute='_compute_google_search_url')
 
@@ -448,48 +443,93 @@ class importProductFromWebsite(models.TransientModel):
 
         return auto_matched, suggestions, ambiguous_names
 
+    def _create_partner_from_proposed(self, proposed_name, kind):
+        """Create a new author/publisher directly from the proposed value and
+        immediately attach it to this import wizard.
+
+        The old implementation opened a separate res.partner dialog. A
+        record created in that dialog had no reliable callback to this
+        transient import wizard, so the newly-created partner was not put
+        into author_ids/publisher_ids or the Similar ... Found list.
+
+        This method deliberately creates the partner in the current request,
+        attaches it to the wizard, and creates a selected suggestion row.
+        The form is then reopened on the same wizard record so the new value
+        is visible immediately.
+        """
+        self.ensure_one()
+        name = (proposed_name or '').strip()
+        if not name:
+            label = 'author' if kind == 'author' else 'publisher'
+            raise UserError(
+                "There is no proposed %s name to create. Enter a name in the "
+                "%s (proposed) field first." % (label, label.title())
+            )
+
+        Partner = self.env['res.partner']
+        vals = {'name': name}
+        if kind == 'author':
+            vals['is_writer'] = True
+        else:
+            vals['is_publisher'] = True
+
+        partner = Partner.create(vals)
+
+        if kind == 'author':
+            self.author_ids = [(4, partner.id)]
+            # Put the newly-created partner into the same visible suggestion
+            # list and mark it selected so the relationship is explicit.
+            self.author_suggestion_line_ids = [(0, 0, {
+                'kind': 'author',
+                'partner_id': partner.id,
+                'selected': True,
+            })]
+            action_name = 'New Author'
+        else:
+            self.publisher_ids = [(4, partner.id)]
+            self.publisher_suggestion_line_ids = [(0, 0, {
+                'kind': 'publisher',
+                'partner_id': partner.id,
+                'selected': True,
+            })]
+            action_name = 'New Publisher'
+
+        # Re-open the current transient record. This refreshes the form from
+        # the database while keeping all of the scraped/imported values.
+        return {
+            'type': 'ir.actions.act_window',
+            'name': action_name,
+            'res_model': 'import.product.from.website',
+            'view_mode': 'form',
+            'res_id': self.id,
+            'target': 'current',
+        }
+
     def action_create_author(self):
-        """Create a new author contact right away (pre-filled with the
-        proposed name, if any) and immediately add it to Authors, then
-        open its form in a popup so the rest of its details - photo,
-        phone, email - can be filled in by hand. Creating the record and
-        linking it *before* opening the popup (rather than trying to
-        react to the popup closing) is what makes the auto-link
-        reliable."""
+        """Create the proposed author immediately and attach it to the
+        current import wizard. The new author also appears in Similar
+        Authors Found with its checkbox selected."""
         self.ensure_one()
         names = self._split_names(self.authors)
-        partner = self.env['res.partner'].create({
-            'is_writer': True,
-            'name': names[0] if names else "New Author",
-        })
-        self.author_ids = [(4, partner.id)]
-        return {
-            'type': 'ir.actions.act_window',
-            'name': "New Author",
-            'res_model': 'res.partner',
-            'res_id': partner.id,
-            'view_mode': 'form',
-            'target': 'new',
-        }
+        if not names:
+            raise UserError(
+                "Enter an author name in the Author (proposed) field before "
+                "clicking New Author."
+            )
+        return self._create_partner_from_proposed(names[0], 'author')
 
     def action_create_publisher(self):
-        """Same as action_create_author, for publishers."""
+        """Create the proposed publisher immediately and attach it to the
+        current import wizard. The new publisher also appears in Similar
+        Publishers Found with its checkbox selected."""
         self.ensure_one()
         names = self._split_names(self.publishers)
-        partner = self.env['res.partner'].create({
-            'is_publisher': True,
-            'name': names[0] if names else "New Publisher",
-        })
-        self.publisher_ids = [(4, partner.id)]
-        return {
-            'type': 'ir.actions.act_window',
-            'name': "New Publisher",
-            'res_model': 'res.partner',
-            'res_id': partner.id,
-            'view_mode': 'form',
-            'target': 'new',
-        }
-
+        if not names:
+            raise UserError(
+                "Enter a publisher name in the Publisher (proposed) field "
+                "before clicking New Publisher."
+            )
+        return self._create_partner_from_proposed(names[0], 'publisher')
 
     @api.onchange('author_suggestion_line_ids')
     def _onchange_author_suggestion_line_ids(self):
@@ -675,15 +715,44 @@ class importProductFromWebsite(models.TransientModel):
         }
 
     def _download_image_b64(self, url):
-        """Download an image and return it base64-encoded, or False if it
-        can't be fetched - never raises, since a missing product image
-        shouldn't stop the rest of the import."""
+        """Download an image safely for product.image_1920.
+
+        Some book sites reject requests without a browser-like User-Agent
+        or Referer.  Use a small session with the source URL as Referer and
+        validate that the response is actually an image before storing it.
+        """
         if not url:
             return False
         try:
-            response = requests.get(url, timeout=15)
+            parsed = urlparse(str(url).strip())
+            if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+                return False
+
+            response = requests.get(
+                str(url).strip(),
+                headers={
+                    'User-Agent': (
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/128.0.0.0 Safari/537.36'
+                    ),
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Referer': self.source_url or parsed.scheme + '://' + parsed.netloc + '/',
+                },
+                timeout=20,
+                allow_redirects=True,
+            )
             response.raise_for_status()
-            return base64.b64encode(response.content).decode("utf-8")
+            content_type = (response.headers.get('Content-Type') or '').lower()
+            if content_type and not content_type.startswith('image/'):
+                _logger.warning(
+                    "Image URL returned non-image content (%s): %s",
+                    content_type, url,
+                )
+                return False
+            if not response.content:
+                return False
+            return base64.b64encode(response.content).decode('ascii')
         except Exception as e:
             _logger.warning("Could not download image from %s: %s", url, e)
             return False
@@ -754,6 +823,39 @@ class importProductFromWebsite(models.TransientModel):
     # Fetch / scrape
     # ------------------------------------------------------------------
 
+    def _update_data_quality_summary(self):
+        """Build a compact, human-readable audit of scraped values.
+
+        This catches the most common scraper failures before import (empty
+        fields, implausible page counts, invalid ISBNs, or missing weight)
+        without preventing the user from importing a partially-known product.
+        """
+        self.ensure_one()
+
+        checks = []
+        def add(label, ok, detail=''):
+            checks.append((label, 'OK' if ok else 'MISSING/REVIEW', detail))
+
+        add('Product Name', bool(self.product_name), self.product_name or '')
+        add('Author', bool(self.authors), self.authors or '')
+        add('Publisher', bool(self.publishers), self.publishers or '')
+        add('Category', bool(self.category_text), self.category_text or '')
+        add('ISBN', bool(self.isbn), self.isbn or '')
+        add('Edition', bool(self.editions), self.editions or '')
+        add('Publication Date', bool(self.publication_date), self.publication_date or '')
+        add('Pages', 1 <= self.pages <= 20000 if self.pages else False, str(self.pages or ''))
+        add('Weight', 0 < self.weight <= 30 if self.weight else False, ('%.3f kg' % self.weight) if self.weight else '')
+        add('Stock', self.stock_qty >= 0, str(self.stock_qty))
+        add('Image', bool(self.image_url), self.image_url or '')
+
+        lines = []
+        for label, status, detail in checks:
+            if status == 'OK':
+                lines.append('✓ %s: %s' % (label, detail))
+            else:
+                lines.append('⚠ %s: %s' % (label, detail or 'not extracted'))
+        self.data_quality_summary = '\n'.join(lines)
+
     def _scrape_source_url(self, interactive=True):
         """Detect which site self.source_url belongs to and run the
         matching *_products() scraper method, populating the fields on
@@ -773,6 +875,19 @@ class importProductFromWebsite(models.TransientModel):
         if not domain_name or not hasattr(self, '%s_products' % domain_name):
             raise UserError(f"Cannot import product data from {host}")
 
+        # Re-fetches must start from a clean scraped-data state. Otherwise a
+        # field that the new page does not provide can retain an old value from
+        # a previous product (for example an unrelated Pages count).
+        scraped_fields = (
+            'product_name', 'image_url', 'ecommerce_description',
+            'face_value', 'stock_qty', 'price', 'isbn', 'pages', 'editions',
+            'publication_date', 'weight', 'language', 'country', 'category_text',
+            'review_notice', 'data_quality_summary',
+        )
+        for field in scraped_fields:
+            if field in self._fields:
+                setattr(self, field, False)
+
         self.publisher_ids = False
         self.author_ids = False
         self.author_suggestion_line_ids = [(5, 0, 0)]
@@ -780,7 +895,6 @@ class importProductFromWebsite(models.TransientModel):
         self.category_suggestion_ids = False
         self.duplicate_product_ids = False
         self.nearest_product_ids = False
-        self.duplicate_suggestion_line_ids = [(5, 0, 0)]
         self.force_duplicate = False
         self.review_notice = False
         self.source_site_label = ALL_SUPPORTED_SITES.get(domain_name, host)
@@ -843,10 +957,7 @@ class importProductFromWebsite(models.TransientModel):
         )
         if not self.duplicate_product_ids:
             self.nearest_product_ids = self._find_nearest_products()
-        self.duplicate_suggestion_line_ids = (
-            [(0, 0, {'match_type': 'duplicate', 'product_id': p.id}) for p in self.duplicate_product_ids]
-            + [(0, 0, {'match_type': 'nearest', 'product_id': p.id}) for p in self.nearest_product_ids]
-        )
+        self._update_data_quality_summary()
         return result
 
     def fetch_data(self):
@@ -856,16 +967,16 @@ class importProductFromWebsite(models.TransientModel):
         duplicates = self.duplicate_product_ids
         if len(duplicates) == 1:
             warnings.append(
-                "An identical product already exists: '%s'. Click 'Update This "
-                "Product' on it below to edit it directly, or tick 'Create "
-                "Anyway' if this is genuinely a different product."
+                "An identical product already exists: '%s'. Click 'Update Existing "
+                "Product' to edit it directly, or tick 'Create Anyway' if this is "
+                "genuinely a different product."
                 % duplicates.name
             )
         elif len(duplicates) > 1:
             warnings.append(
-                "Multiple possible duplicates found: %s. Click 'Update This "
-                "Product' on the correct row below, or tick 'Create Anyway' if "
-                "none of them are actually the same product."
+                "Multiple possible duplicates found: %s. Pick the correct one in "
+                "'Product to Update' below, then click 'Update Existing Product' - "
+                "or tick 'Create Anyway' if none of them are actually the same product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
@@ -967,16 +1078,15 @@ class importProductFromWebsite(models.TransientModel):
             if len(duplicates) == 1:
                 raise UserError(
                     "An identical product already exists: '%s'.\n\n"
-                    "Click 'Update This Product' on it below to edit it "
-                    "directly, or tick 'Create Anyway' if this is genuinely a "
-                    "different product."
+                    "Use 'Update Existing Product' to edit it directly, or tick "
+                    "'Create Anyway' if this is genuinely a different product."
                     % duplicates.name
                 )
             raise UserError(
                 "Multiple possible duplicates found: %s.\n\n"
-                "Click 'Update This Product' on the correct row below, or "
-                "tick 'Create Anyway' if none of them are actually the same "
-                "product."
+                "Pick the correct one in 'Product to Update' and use 'Update Existing "
+                "Product', or tick 'Create Anyway' if none of them are actually the "
+                "same product."
                 % ', '.join(duplicates.mapped('name'))
             )
 
@@ -998,10 +1108,9 @@ class importProductFromWebsite(models.TransientModel):
 
     def update_existing_product(self):
         """Instead of creating a new product, refresh the fields on an
-        existing product - normally triggered via 'Update This Product' on
-        a specific row in 'Possible duplicate found', which sets
-        selected_duplicate_id just before calling this. Falls back to the
-        single unambiguous duplicate if selected_duplicate_id isn't set."""
+        existing product - either the one the user explicitly picked in
+        'Product to Update' (required when more than one duplicate was
+        found), or the single unambiguous duplicate."""
         self.ensure_one()
         product = self.selected_duplicate_id
         if not product:
@@ -1014,8 +1123,8 @@ class importProductFromWebsite(models.TransientModel):
             if len(duplicates) > 1:
                 raise UserError(
                     "Multiple possible duplicates found: %s.\n\n"
-                    "Click 'Update This Product' on the correct row in "
-                    "'Possible duplicate found' first."
+                    "Please pick the one you want to update in the 'Product to Update' "
+                    "field first."
                     % ', '.join(duplicates.mapped('name'))
                 )
             product = duplicates[0]

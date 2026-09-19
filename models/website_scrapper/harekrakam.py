@@ -68,7 +68,7 @@ class ImportProductFromHarekrokom(models.TransientModel):
             self.country    = specs.get('country', '')
             self.weight     = specs.get('weight', 0.0)
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            logging.info("Successfully scraped Harek Rokom product: %s", self.product_name)
             return True
 
         except Exception as e:

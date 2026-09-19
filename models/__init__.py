@@ -8,3 +8,5 @@ from . import dashboard
 from . import website_scrapper
 
 
+
+from . import unicode_utils

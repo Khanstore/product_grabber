@@ -2,6 +2,7 @@ from odoo import models, fields, api
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from bs4 import BeautifulSoup
+import logging
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 import json,xmlrpc
@@ -22,7 +23,7 @@ class importProductFromPBS(models.TransientModel):
 
     def pbs_products(self):
         url = self.source_url
-        if not url or 'pbs.com' not in url:
+        if not url or 'pbs.com.bd' not in url.lower():
             raise ValueError("Invalid PBS URL")
 
         # Session with retries
@@ -50,7 +51,7 @@ class importProductFromPBS(models.TransientModel):
             # self.product_name = extractor.get_title()
             self.face_value = extractor.get_original_price()
             self.price = extractor.get_current_price()
-            # self.stock_qty = extractor.get_stock_quantity()
+            self.stock_qty = extractor.get_stock_quantity()
             self.ecommerce_description = extractor.get_description()
             self.image_url = extractor.get_image_url()
 
@@ -59,13 +60,14 @@ class importProductFromPBS(models.TransientModel):
             self.product_name = specs.get('title', '')
             self.isbn = specs.get('isbn', '')
             self.publishers = specs.get('publisher', '')
-            self.pages = specs.get('pages', 1)
+            self.pages = int(specs.get('pages', 0) or 0)
             self.editions = specs.get('edition', '')
             self.language = specs.get('language', '')
             self.country = specs.get('country', '')
             self.weight = specs.get('weight', 0.0)
+            self.stock_qty = specs.get('stock_qty', self.stock_qty or 0)
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            logging.info("Successfully scraped PBS product: %s", self.product_name)
             return True
 
         except Exception as e:
@@ -140,40 +142,91 @@ class PBSExtractor(BaseBookExtractor):
                 return clean_url
 
     def get_specifications(self):
-        """Extract all specifications from details table"""
+        """Extract PBS book specifications from the specification table.
+
+        PBS currently exposes fields such as Edition, Number of Pages and
+        Weight in a simple two-column table.  Keys may be English or Bengali,
+        so matching is deliberately normalized and case-insensitive.
+        """
         specs = {}
         table = self.soup.find("table")
         if not table:
             return specs
 
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 2:
-                key = cells[0].get_text(strip=True).lower()
-                value = cells[-1].get_text(strip=True)
+        key_map = {
+            "title": ("title", "name", "নাম"),
+            "author": ("author", "লেখক"),
+            "publisher": ("publisher", "প্রকাশক", "প্রকাশনী"),
+            "isbn": ("isbn",),
+            "edition": ("edition", "সংস্করণ"),
+            "pages": ("number of page", "number of pages", "page", "পৃষ্ঠা"),
+            "language": ("language", "ভাষা"),
+            "country": ("country", "দেশ"),
+            "weight": ("weight", "ওজন"),
+            "stock": ("stock", "in stock", "স্টক", "মজুদ"),
+        }
 
-                if "isbn" in key:
-                    specs["isbn"] = value
-                # elif "Translator" in key or "অনুবাদক" in key:
-                #     specs["author"] = value
-                # elif "author" in key or "লেখক" in key:
-                #     specs["author"] = value
-                elif "publisher" in key or "প্রকাশক" in key:
-                    specs["publisher"] = value
-                elif "title" in key:
-                    specs["title"] = value
-                elif "edition" in key or "সংস্করণ" in key:
-                    specs["edition"] = value
-                elif "number of pages" in key or "পৃষ্ঠা" in key:
-                    match = re.search(r'\d+', value)
-                    specs["pages"] = match.group() if match else value
-                elif "language" in key or "ভাষা" in key:
-                    specs["language"] = value
-                elif "country" in key or "দেশ" in key:
-                    specs["country"] = value
+        for row in table.find_all("tr"):
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            key_raw = cells[0].get_text(" ", strip=True)
+            value = cells[-1].get_text(" ", strip=True)
+            key = re.sub(r"\s+", " ", key_raw).strip().lower()
+            if not value:
+                continue
 
+            for field, aliases in key_map.items():
+                if any(alias in key for alias in aliases):
+                    if field == "pages":
+                        m = re.search(r"[0-9০-৯]+", value)
+                        if m:
+                            specs[field] = self._to_int(m.group())
+                    elif field == "weight":
+                        specs[field] = self._parse_weight(value)
+                    elif field == "stock":
+                        specs["stock_qty"] = self._parse_stock(value)
+                    else:
+                        specs[field] = value
+                    break
+
+        # Author is also present as a table row on current PBS pages.
+        if not specs.get("author"):
+            author = self.get_authors()
+            if author:
+                specs["author"] = author
         return specs
+
+    def get_stock_quantity(self):
+        specs = self.get_specifications()
+        return int(specs.get("stock_qty", 0) or 0)
+
+    @staticmethod
+    def _to_int(value):
+        digits = str(value).translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"\d+", digits)
+        return int(m.group()) if m else 0
+
+    def _parse_weight(self, value):
+        text = str(value).strip().lower().replace(",", ".")
+        text = text.translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(kg|kgs|কেজি|g|gm|gram|grams|গ্রাম)?", text)
+        if not m:
+            return 0.0
+        amount = float(m.group(1))
+        unit = m.group(2) or "kg"
+        if unit in ("g", "gm", "gram", "grams", "গ্রাম"):
+            amount /= 1000.0
+        return amount
+
+    def _parse_stock(self, value):
+        text = str(value).lower().translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"\d+", text)
+        if m:
+            return int(m.group())
+        if any(x in text for x in ("in stock", "available", "স্টকে", "মজুদ", "উপলব্ধ")):
+            return 1
+        return 0
 
     # ------------------- Helpers ------------------- #
     def _extract_text(self, selectors, default=""):

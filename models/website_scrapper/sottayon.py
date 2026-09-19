@@ -1,5 +1,6 @@
 from odoo import models, fields, api
 from bs4 import BeautifulSoup
+import logging
 import json, logging, re, requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -50,7 +51,7 @@ class importProductFromSottayon(models.TransientModel):
             self.isbn       = specs.get('isbn', '')
             self.language   = specs.get('language', '')
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            logging.info("Successfully scraped Sottayon product: %s", self.product_name)
             return True
 
         except Exception as e:

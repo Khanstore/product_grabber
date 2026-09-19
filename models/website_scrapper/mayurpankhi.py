@@ -5,6 +5,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+import logging
 import re, logging, time
 from odoo.exceptions import UserError
 from .base_extractor import BaseBookExtractor
@@ -58,7 +59,7 @@ class importProductFromMayurpankhi(models.TransientModel):
             self.language    = specs.get('language', '')
             self.publishers  = specs.get('publisher', 'Mayurpankhi')
 
-            print(f"✓ Successfully scraped: {self.product_name}")
+            logging.info("Successfully scraped Mayurpankhi product: %s", self.product_name)
             return True
 
         except Exception as e:

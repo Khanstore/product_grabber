@@ -1,0 +1,238 @@
+from odoo import models, fields, api
+from selenium import webdriver
+from selenium.webdriver.support.ui import WebDriverWait
+from bs4 import BeautifulSoup
+import logging
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+import json,xmlrpc
+import requests
+import re,logging
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import urllib.parse
+from urllib.parse import urlparse
+from odoo.exceptions import UserError
+import base64
+from .base_extractor import BaseBookExtractor
+
+class importProductFromPBS(models.TransientModel):
+    _inherit = 'import.product.from.website'
+    _description = 'import rokomari product from website'
+
+    def pbs_products(self):
+        url = self.source_url
+        if not url or 'pbs.com.bd' not in url.lower():
+            raise ValueError("Invalid PBS URL")
+
+        # Session with retries
+        session = requests.Session()
+        retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        session.headers.update(headers)
+
+        try:
+            session.get('https://www.pbs.com/', timeout=10)  # warm-up
+            response = session.get(url, timeout=15)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            extractor = PBSExtractor(soup)
+
+            # self.product_name = extractor.get_title()
+            self.face_value = extractor.get_original_price()
+            self.price = extractor.get_current_price()
+            self.stock_qty = extractor.get_stock_quantity()
+            self.ecommerce_description = extractor.get_description()
+            self.image_url = extractor.get_image_url()
+
+            specs = extractor.get_specifications()
+            self.authors = extractor.get_authors()
+            self.product_name = specs.get('title', '')
+            self.isbn = specs.get('isbn', '')
+            self.publishers = specs.get('publisher', '')
+            self.pages = int(specs.get('pages', 0) or 0)
+            self.editions = specs.get('edition', '')
+            self.language = specs.get('language', '')
+            self.country = specs.get('country', '')
+            self.weight = specs.get('weight', 0.0)
+            self.stock_qty = specs.get('stock_qty', self.stock_qty or 0)
+
+            logging.info("Successfully scraped PBS product: %s", self.product_name)
+            return True
+
+        except Exception as e:
+            logging.exception(f"Error scraping {url}: {e}")
+            self.product_name = getattr(self, "product_name", "Unknown Product")
+            self.price = getattr(self, "price", 0.0)
+            self.stock_qty = getattr(self, "stock_qty", 0)
+            return False
+
+
+
+class PBSExtractor(BaseBookExtractor):
+    """Helper class to extract data from PBS product pages"""
+
+    def __init__(self, soup: BeautifulSoup):
+        self.soup = soup
+
+    def get_title(self):
+        """Extract book title"""
+        selectors = [
+            ("h1", {"class": lambda x: x and "text-xl" in x}),  # usually main title
+            ("h1", {"itemprop": "name"}),
+        ]
+        return self._extract_text(selectors, "Unknown Title")
+
+    def get_original_price(self):
+        """Extract current and original price"""
+        printed_price = self.soup.find("del")
+        if printed_price:
+            return self._parse_price(printed_price.get_text(strip=True))
+
+    def get_current_price(self):
+        """Extract current and original price"""
+        price_container = self.soup.select_one("p del").parent.parent.find('h5')
+        if price_container:
+            return self._parse_price(price_container.get_text(strip=True))
+        return 0
+
+    def get_description(self):
+        """Extract book description (বই সংক্ষেপ)"""
+        heading = self.soup.find("h5", string=lambda t: t and "বই সংক্ষেপ" in t)
+        if heading:
+            desc_p = heading.find_parent().find_next("p")
+            if desc_p:
+                return desc_p.get_text(" ", strip=True)
+        return ""
+
+    def get_authors(self):
+        title = self.soup.find("title")
+        if title:
+            title_text = title.get_text()
+            # Title format: "বই নাম-by Writer Name - Category"
+            if "-by " in title_text:
+                writer = title_text.split("-by ")[1].split(" - ")[0].strip()
+                return  writer
+
+
+
+    def get_image_url(self):
+        """Extract main book cover image"""
+        img = self.soup.select_one("div.grid img")
+        if img:
+            src ="https://pbs.com.bd" + img.get("src")
+
+            # Parse the URL
+            parsed = urllib.parse.urlparse(src)
+            query = urllib.parse.parse_qs(parsed.query)
+
+            # Extract the 'url' parameter and decode it
+            if "url" in query:
+                clean_url = urllib.parse.unquote(query["url"][0])
+                return clean_url
+
+    def get_specifications(self):
+        """Extract PBS book specifications from the specification table.
+
+        PBS currently exposes fields such as Edition, Number of Pages and
+        Weight in a simple two-column table.  Keys may be English or Bengali,
+        so matching is deliberately normalized and case-insensitive.
+        """
+        specs = {}
+        table = self.soup.find("table")
+        if not table:
+            return specs
+
+        key_map = {
+            "title": ("title", "name", "নাম"),
+            "author": ("author", "লেখক"),
+            "publisher": ("publisher", "প্রকাশক", "প্রকাশনী"),
+            "isbn": ("isbn",),
+            "edition": ("edition", "সংস্করণ"),
+            "pages": ("number of page", "number of pages", "page", "পৃষ্ঠা"),
+            "language": ("language", "ভাষা"),
+            "country": ("country", "দেশ"),
+            "weight": ("weight", "ওজন"),
+            "stock": ("stock", "in stock", "স্টক", "মজুদ"),
+        }
+
+        for row in table.find_all("tr"):
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            key_raw = cells[0].get_text(" ", strip=True)
+            value = cells[-1].get_text(" ", strip=True)
+            key = re.sub(r"\s+", " ", key_raw).strip().lower()
+            if not value:
+                continue
+
+            for field, aliases in key_map.items():
+                if any(alias in key for alias in aliases):
+                    if field == "pages":
+                        m = re.search(r"[0-9০-৯]+", value)
+                        if m:
+                            specs[field] = self._to_int(m.group())
+                    elif field == "weight":
+                        specs[field] = self._parse_weight(value)
+                    elif field == "stock":
+                        specs["stock_qty"] = self._parse_stock(value)
+                    else:
+                        specs[field] = value
+                    break
+
+        # Author is also present as a table row on current PBS pages.
+        if not specs.get("author"):
+            author = self.get_authors()
+            if author:
+                specs["author"] = author
+        return specs
+
+    def get_stock_quantity(self):
+        specs = self.get_specifications()
+        return int(specs.get("stock_qty", 0) or 0)
+
+    @staticmethod
+    def _to_int(value):
+        digits = str(value).translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"\d+", digits)
+        return int(m.group()) if m else 0
+
+    def _parse_weight(self, value):
+        text = str(value).strip().lower().replace(",", ".")
+        text = text.translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(kg|kgs|কেজি|g|gm|gram|grams|গ্রাম)?", text)
+        if not m:
+            return 0.0
+        amount = float(m.group(1))
+        unit = m.group(2) or "kg"
+        if unit in ("g", "gm", "gram", "grams", "গ্রাম"):
+            amount /= 1000.0
+        return amount
+
+    def _parse_stock(self, value):
+        text = str(value).lower().translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+        m = re.search(r"\d+", text)
+        if m:
+            return int(m.group())
+        if any(x in text for x in ("in stock", "available", "স্টকে", "মজুদ", "উপলব্ধ")):
+            return 1
+        return 0
+
+    # ------------------- Helpers ------------------- #
+    def _extract_text(self, selectors, default=""):
+        for tag, attrs in selectors:
+            elem = self.soup.find(tag, attrs)
+            if elem:
+                return elem.get_text(strip=True)
+        return default
+

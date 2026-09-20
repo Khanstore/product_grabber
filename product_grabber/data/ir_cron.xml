@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <!--
+        Off by default: re-scraping every imported product's source page on
+        a schedule sends real traffic to those sites. Turn it on
+        deliberately (Settings > Technical > Scheduled Actions) once
+        you're happy with how often you want it to run, and adjust the
+        interval below to something polite for the sites you import from.
+    -->
+    <record id="ir_cron_refresh_product_from_source" model="ir.cron">
+        <field name="name">Product Grabber: refresh imported products from source</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="state">code</field>
+        <field name="code">model.search([('publisher_link', '!=', False)]).action_refresh_from_source()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="False"/>
+    </record>
+</odoo>

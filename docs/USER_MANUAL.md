@@ -292,7 +292,6 @@ Rokomari browser extraction preserves the primary Author and Publisher values an
 When the import wizard finds possible duplicate products, the review screen shows a dedicated duplicate table with the product name, match type, a **View** action, and an **Update This Product** action. Viewing opens the existing product. Updating writes the newly scraped values into that existing product instead of creating a second record.
 
 
-### Rokomari 18.0.0.73
-- Added a driver-independent Chromium `--dump-dom` fallback so specification extraction can work when chromedriver is broken but Chromium is installed.
-- Rokomari Edition values are now also used to derive Publication Date when the site does not expose a separate Publication Date row.
-- Specification container detection is anchored to the Product Specification & Summary section so the final Weight row is not omitted.
+## Release 18.0.0.76
+
+No user workflow changed. This release fixes module-upgrade compatibility for the duplicate-review Match Type field. Existing duplicate rows continue to display ISBN Match, Source URL Match, Exact Name Match, or Closest Match.

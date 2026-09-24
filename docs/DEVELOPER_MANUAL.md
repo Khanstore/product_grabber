@@ -285,7 +285,6 @@ Rokomari browser extraction supports `exclude_fields`; Author and Publisher are 
 `import.product.duplicate.suggestion` is a transient child model used only by the import wizard UI. `_sync_duplicate_suggestion_lines()` rebuilds its rows after duplicate detection and classifies each match as ISBN Match, Source URL Match, Exact Name Match, or Closest Match. Row actions delegate back to the parent wizard for viewing or updating the selected product.
 
 
-### Rokomari 18.0.0.73
-- Added a driver-independent Chromium `--dump-dom` fallback so specification extraction can work when chromedriver is broken but Chromium is installed.
-- Rokomari Edition values are now also used to derive Publication Date when the site does not expose a separate Publication Date row.
-- Specification container detection is anchored to the Product Specification & Summary section so the final Weight row is not omitted.
+## Release 18.0.0.76
+
+The transient duplicate-suggestion `match_type` field was restored from `Char` to `Selection` with stable keys (`isbn`, `source_url`, `exact_name`, `nearest`). This preserves compatibility with existing `ir.model.fields.selection` metadata and prevents Odoo registry initialization failures during module upgrades.

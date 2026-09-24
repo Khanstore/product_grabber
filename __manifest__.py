@@ -1,6 +1,6 @@
 {
     'name': 'product_grabber',
-    'version': '18.0.0.75',
+    'version': '18.0.0.76',
     'author': 'SM Ashraf',
     'category': 'Reporting',
     'summary': 'Import book/product data into Odoo from supported source websites',

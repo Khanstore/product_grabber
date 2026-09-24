@@ -174,7 +174,21 @@ class ImportProductDuplicateSuggestion(models.TransientModel):
         string='Name',
         readonly=True,
     )
-    match_type = fields.Char(string='Match Type', readonly=True)
+    # Keep this as a Selection field.  Older database versions stored
+    # selection metadata for the legacy ``nearest`` value.  Changing this
+    # field to Char makes Odoo's ir.model.fields.selection cleanup call
+    # ``ondelete`` on a Char field and can prevent the registry from loading.
+    # Using the stable legacy selection keys keeps upgrades compatible.
+    match_type = fields.Selection(
+        selection=[
+            ('isbn', 'ISBN Match'),
+            ('source_url', 'Source URL Match'),
+            ('exact_name', 'Exact Name Match'),
+            ('nearest', 'Closest Match'),
+        ],
+        string='Match Type',
+        readonly=True,
+    )
 
     def action_view_product(self):
         self.ensure_one()
@@ -674,13 +688,15 @@ class importProductFromWebsite(models.TransientModel):
         commands = [(5, 0, 0)]
         if self.duplicate_product_ids:
             for product in self.duplicate_product_ids:
-                match_type = 'Closest Match'
+                # Store Selection keys, not display labels. Odoo renders the
+                # human-readable label automatically in the UI.
+                match_type = 'nearest'
                 if self.isbn and getattr(product, 'isbn', False) and product.isbn.strip() == self.isbn.strip():
-                    match_type = 'ISBN Match'
+                    match_type = 'isbn'
                 elif self.source_url and getattr(product, 'publisher_link', False) and product.publisher_link.strip() == self.source_url.strip():
-                    match_type = 'Source URL Match'
+                    match_type = 'source_url'
                 elif self.product_name and product.name and product.name.strip().casefold() == self.product_name.strip().casefold():
-                    match_type = 'Exact Name Match'
+                    match_type = 'exact_name'
                 commands.append((0, 0, {
                     'product_id': product.id,
                     'match_type': match_type,

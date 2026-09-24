@@ -2,6 +2,14 @@
 
 Book/product importer for Odoo 18 with site-specific extraction, live Search & Import, duplicate checks, author/publisher matching, bulk import and source refresh.
 
+
+## 18.0.0.76 — Odoo upgrade registry compatibility fix
+
+- Restored `import.product.duplicate.suggestion.match_type` as a Selection field.
+- Preserved the legacy `nearest` selection key as `Closest Match`.
+- This avoids an Odoo registry-load failure caused when `ir.model.fields.selection` cleanup encounters a `Char` field and attempts to access selection `ondelete` metadata.
+- No database column type change is required; both Selection and Char use a string storage column.
+
 ## 18.0.0.58 — completion build
 
 ### Rokomari extraction hardening
@@ -61,9 +69,3 @@ The extractor now handles separate label/value DOM siblings, whole specification
 
 ### Rokomari specification mapping (18.0.0.62)
 The importer reads the visible Product Specification & Summary labels directly. Edition populates Editions, the year/date inside Edition populates Publication Date, Number of Pages/No of Page populates Pages, Weight populates Weight, ISBN populates ISBN, and the product Category populates Category (proposed). Generic JavaScript `page/pages` state is excluded from page-count extraction.
-
-
-### Rokomari 18.0.0.73
-- Added a driver-independent Chromium `--dump-dom` fallback so specification extraction can work when chromedriver is broken but Chromium is installed.
-- Rokomari Edition values are now also used to derive Publication Date when the site does not expose a separate Publication Date row.
-- Specification container detection is anchored to the Product Specification & Summary section so the final Weight row is not omitted.

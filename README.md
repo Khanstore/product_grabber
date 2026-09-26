@@ -3,6 +3,13 @@
 Book/product importer for Odoo 18 with site-specific extraction, live Search & Import, duplicate checks, author/publisher matching, bulk import and source refresh.
 
 
+## 18.0.0.78 — Revert Rokomari search changes
+
+- Reverted the Rokomari live-search implementation to the stable 18.0.0.76 behavior.
+- Removed the latest 18.0.0.77 search-response/browser-search changes that caused the server results to differ from the local results.
+- Retained the Odoo registry compatibility fix for duplicate suggestion `match_type`.
+- No changes to Rokomari product-detail/specification extraction, author/publisher behavior, or duplicate-review UI.
+
 ## 18.0.0.76 — Odoo upgrade registry compatibility fix
 
 - Restored `import.product.duplicate.suggestion.match_type` as a Selection field.
@@ -69,3 +76,19 @@ The extractor now handles separate label/value DOM siblings, whole specification
 
 ### Rokomari specification mapping (18.0.0.62)
 The importer reads the visible Product Specification & Summary labels directly. Edition populates Editions, the year/date inside Edition populates Publication Date, Number of Pages/No of Page populates Pages, Weight populates Weight, ISBN populates ISBN, and the product Category populates Category (proposed). Generic JavaScript `page/pages` state is excluded from page-count extraction.
+## 18.0.0.79 — Rokomari scraper cleanup
+
+- Simplified `models/website_scrapper/rokomary.py` without changing the existing Import Product wizard fields or field mapping.
+- Rokomari E-commerce Description first reads the current rendered `productSummary_summeryText__*` container.
+- Specification extraction stays focused on the visible Specification tab/rows.
+- Author and Publisher remain excluded from browser specification overwrite.
+
+
+
+## 18.0.0.80 — Rokomari E-commerce Description fix
+
+- Fixed Rokomari E-commerce Description so the full product summary is imported.
+- Reads the rendered `productSummary_summeryText__*` container first.
+- Falls back to Rokomari's `productSummery.detailBangla` Next.js payload before the shorter meta description.
+- Captures the browser-rendered Summary before switching to the Specification tab.
+- No changes to the existing wizard fields or field mapping.

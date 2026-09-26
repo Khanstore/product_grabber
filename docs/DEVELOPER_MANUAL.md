@@ -288,3 +288,34 @@ Rokomari browser extraction supports `exclude_fields`; Author and Publisher are 
 ## Release 18.0.0.76
 
 The transient duplicate-suggestion `match_type` field was restored from `Char` to `Selection` with stable keys (`isbn`, `source_url`, `exact_name`, `nearest`). This preserves compatibility with existing `ir.model.fields.selection` metadata and prevents Odoo registry initialization failures during module upgrades.
+
+## Release 18.0.0.78
+
+This release reverts the Rokomari live-search changes introduced after 18.0.0.76 and restores the 18.0.0.76 search behavior. The duplicate-review Match Type remains the Odoo-compatible Selection implementation from 18.0.0.76.
+## Release 18.0.0.79
+
+`models/website_scrapper/rokomary.py` was reduced to one focused extraction path while preserving the existing wizard field contract. The app-facing mapping is unchanged:
+
+- `product_name` → Product Name
+- `image_url` → Image URL
+- `ecommerce_description` → E-commerce Description
+- `face_value` → Printed Price
+- `stock_qty` → Stock Quantity
+- `price` → Sale Price
+- `isbn` → ISBN
+- `pages` → Pages
+- `editions` → Editions
+- `publication_date` → Publication Date
+- `weight` → weight
+- `language` → Language
+- `country` → Country
+- `category_text` → Category (proposed)
+- `authors` / `publishers` retain the existing partner matching workflow.
+
+The current rendered Rokomari description selector is `div[class^="productSummary_summeryText__"]`. Specification values are collected from visible rows and, when necessary, from the browser-rendered DOM after clicking the Specification control. Generic JavaScript page counters are not treated as Pages.
+
+
+
+## Release 18.0.0.80
+
+The Rokomari description path was corrected without changing the wizard field contract. `RokomariExtractor.get_description()` now uses this priority: rendered `div[class^="productSummary_summeryText__"]`, decoded `productSummery.detailBangla` from the Next.js flight payload, then legacy summary/meta/JSON-LD fallbacks. When Selenium is required, the summary is captured before clicking Specification so the tab change cannot discard it. No existing Import Product field or mapping was added, removed, or renamed.

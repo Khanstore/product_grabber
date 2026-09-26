@@ -258,8 +258,8 @@ Use reasonable request rates. Source websites may rate-limit automated requests,
 
 ## Rokomari
 
-### Rokomari browser extraction on Windows
-For Rokomari pages whose Specification values are rendered only after clicking the Specification tab, the addon detects Chrome/Chromium on Windows automatically. It checks the standard Google Chrome locations under `%LOCALAPPDATA%`, `%PROGRAMFILES%`, and `%PROGRAMFILES(X86)%`. When Chrome is installed but `chromedriver.exe` is not on PATH, Selenium Manager is used on Windows. Optional environment variables are available: `ROKOMARI_CHROME_BINARY` and `ROKOMARI_CHROMEDRIVER_PATH`.: source-to-field mapping
+### Rokomari browser extraction
+For pages where Rokomari renders Description/Specification data only after the page is loaded, the addon uses Selenium/Chrome as a fallback. The Specification workflow is kept simple: open the product page, click the visible **Specification** control, wait for the rendered rows, then read the displayed label/value pairs. Optional environment variables are `ROKOMARI_CHROME_BINARY` and `ROKOMARI_CHROMEDRIVER_PATH`.
 
 For Rokomari book pages, the Import screen maps the source specification values into the wizard as follows:
 
@@ -295,3 +295,18 @@ When the import wizard finds possible duplicate products, the review screen show
 ## Release 18.0.0.76
 
 No user workflow changed. This release fixes module-upgrade compatibility for the duplicate-review Match Type field. Existing duplicate rows continue to display ISBN Match, Source URL Match, Exact Name Match, or Closest Match.
+
+## Release 18.0.0.78
+
+This release reverts the Rokomari live-search changes introduced after 18.0.0.76 and restores the 18.0.0.76 search behavior. The duplicate-review Match Type remains the Odoo-compatible Selection implementation from 18.0.0.76.
+## Release 18.0.0.79
+
+The Rokomari scraper was simplified without changing the Import Product wizard fields or their mapping. The existing fields remain `Product Name`, `Image URL`, `E-commerce Description`, `Printed Price`, `Stock Quantity`, `Sale Price`, `ISBN`, `Pages`, `Editions`, `Publication Date`, `weight`, `Language`, `Country`, and `Category (proposed)`, with Author and Publisher still kept in their existing proposed/partner workflow.
+
+Rokomari E-commerce Description now directly targets the rendered `div[class^="productSummary_summeryText__"]` container before older fallbacks. Specification extraction is kept focused on the visible Specification rows and the browser-rendered page after clicking the Specification tab.
+
+
+
+## Release 18.0.0.80
+
+Rokomari E-commerce Description now reads the full product summary details instead of stopping at the shorter Open Graph/meta description. The existing Import Product fields and their mapping are unchanged. The scraper first reads the rendered `productSummary_summeryText__*` container; when that container is not present in the static HTML, it reads Rokomari's `productSummery.detailBangla` Next.js payload and converts the contained HTML to the same readable description text.
